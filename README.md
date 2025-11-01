@@ -6,7 +6,7 @@ TriGuard is a diagnostic toolkit for evaluating the **safety** of image classifi
 - 🧠 **Interpretability**: Attribution entropy and drift
 - 📊 **Faithfulness**: Saliency effectiveness under input perturbations
 
-We introduce **Attribution Drift Score (ADS)** and demonstrate how entropy-regularized training improves explanation stability — even in models with high adversarial performance.
+We introduce **Attribution Drift Score (ADS)** and demonstrate how entropy-regularized training improves explanation stability even in models with high adversarial performance. For methodology, analysis, and results, see the full paper: [![Paper](https://img.shields.io/badge/Paper-red)](https://arxiv.org/abs/2506.14217)
 
 ---
 
@@ -17,14 +17,6 @@ We introduce **Attribution Drift Score (ADS)** and demonstrate how entropy-regul
 - 🔁 Evaluation with and without entropy-regularized training
 - ✅ Supports multiple models (SimpleCNN, ResNet, DenseNet, MobileNetV3)
 - 📦 Datasets: MNIST, FashionMNIST, CIFAR-10
-
----
-
-## 📄 Paper
-
-For methodology, analysis, and results, see the full paper:
-
-[![Paper](https://img.shields.io/badge/Paper-red)](https://arxiv.org/abs/2506.14217)
 
 ---
 
