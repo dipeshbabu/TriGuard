@@ -160,9 +160,7 @@ def main():
         # We'll compute ADS under several baseline pairs and log mean over K samples.
         # We implement this by reusing attribution metrics but writing extra columns.
         # For simplicity: we log ADS(zero,blur) as ads_mean (main), and add noise/uniform variants.
-        from .triguard.attributions import blurred_baseline, integrated_gradients, ads_baseline
-        from .triguard.attributions import attribution_entropy
-        import torch
+        from triguard.attributions import blurred_baseline, integrated_gradients, ads_baseline
 
         header = ["dataset", "model", "seed", "K", "ads_zero_blur", "ads_zero_noise",
                   "ads_zero_uniform", "ads_blur_noise", "ads_blur_uniform", "ads_noise_uniform"]
