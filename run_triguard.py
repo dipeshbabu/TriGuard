@@ -1,6 +1,7 @@
 import os
 import argparse
 import random
+
 import numpy as np
 import torch
 from torch import optim
@@ -23,6 +24,58 @@ def set_seed(seed: int):
     np.random.seed(seed)
     torch.manual_seed(seed)
     torch.cuda.manual_seed_all(seed)
+
+
+def maybe_compile(model: torch.nn.Module, device: torch.device):
+    # torch.compile is PyTorch 2.x; guard so script still runs on older versions.
+    if device.type == "cuda" and hasattr(torch, "compile"):
+        return torch.compile(model)
+    return model
+
+
+def train_with_early_stopping(
+    model,
+    train_loader,
+    opt,
+    device,
+    epochs: int,
+    lambda_entropy: float,
+    scaler=None,
+    patience: int = 1,
+    min_delta: float = 1e-4,
+):
+    best = float("inf")
+    bad = 0
+
+    for ep in range(epochs):
+        loss = train_one_epoch(
+            model,
+            train_loader,
+            opt,
+            device,
+            lambda_entropy=lambda_entropy,
+            scaler=scaler,
+        )
+
+        # Robust in case train_one_epoch returns (loss, ...)
+        if isinstance(loss, (tuple, list)):
+            loss = loss[0]
+
+        # If loss isn't returned, we can't early-stop reliably; just continue training.
+        if loss is None:
+            continue
+
+        loss = float(loss)
+
+        if loss < best - min_delta:
+            best = loss
+            bad = 0
+        else:
+            bad += 1
+            if bad >= patience:
+                break
+
+    return best
 
 
 def main():
@@ -49,20 +102,33 @@ def main():
                    default="truth", choices=["truth", "pred"])
 
     # which experiment(s)
-    p.add_argument("--mode", type=str, default="main",
-                   choices=["main", "lambda", "baseline", "faithfulness"])
+    p.add_argument(
+        "--mode",
+        type=str,
+        default="main",
+        choices=["main", "lambda", "baseline", "faithfulness"],
+    )
     p.add_argument("--dataset", type=str, default=None)
     p.add_argument("--model", type=str, default=None)
     p.add_argument("--lambda_list", type=str, default="0.0,0.01,0.05,0.1")
 
+    # early stopping
+    p.add_argument("--patience", type=int, default=3)
+    p.add_argument("--min_delta", type=float, default=1e-4)
+
     args = p.parse_args()
     set_seed(args.seed)
+
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    scaler = torch.amp.GradScaler("cuda") if device.type == "cuda" else None
 
     datasets = ["mnist", "fashionmnist",
                 "cifar10"] if args.dataset is None else [args.dataset]
-    models = ["simplecnn", "resnet50", "resnet101", "mobilenetv3",
-              "densenet121"] if args.model is None else [args.model]
+    models = (
+        ["simplecnn", "resnet50", "resnet101", "mobilenetv3", "densenet121"]
+        if args.model is None
+        else [args.model]
+    )
 
     # Output CSV paths
     table1_csv = os.path.join(args.out, "table1_main.csv")
@@ -71,35 +137,74 @@ def main():
     faith_csv = os.path.join(args.out, "tables5_6_faithfulness.csv")
 
     if args.mode == "main":
-        header = ["dataset", "model", "seed", "lambda_entropy", "clean_acc",
-                  "adv_error", "entropy_mean", "ads_mean", "ads_adv_mean", "crown_rate"]
+        header = [
+            "dataset",
+            "model",
+            "seed",
+            "lambda_entropy",
+            "clean_acc",
+            "adv_error",
+            "entropy_mean",
+            "ads_mean",
+            "ads_adv_mean",
+            "crown_rate",
+        ]
+
         for ds in datasets:
             train_loader, test_loader, test_set, clamp_min, clamp_max, eps = get_loaders(
                 ds, args.batch)
+
             for m in models:
                 model = get_model(m, ds).to(device)
+                model = maybe_compile(model, device)
+
                 opt = optim.Adam(model.parameters(), lr=args.lr)
-                for _ in range(args.epochs):
-                    train_one_epoch(model, train_loader, opt,
-                                    device, lambda_entropy=args.lambda_entropy)
+
+                train_with_early_stopping(
+                    model,
+                    train_loader,
+                    opt,
+                    device,
+                    epochs=args.epochs,
+                    lambda_entropy=args.lambda_entropy,
+                    scaler=scaler,
+                    patience=args.patience,
+                    min_delta=args.min_delta,
+                )
 
                 # alpha heuristic: eps/8 is common
                 alpha = eps / 8.0
 
                 clean = accuracy(model, test_loader, device)
-                adv_acc = pgd_accuracy(model, test_loader, device, eps, alpha, args.pgd_steps,
-                                       clamp_min, clamp_max, max_batches=args.eval_batches_adv)
+                adv_acc = pgd_accuracy(
+                    model,
+                    test_loader,
+                    device,
+                    eps,
+                    alpha,
+                    args.pgd_steps,
+                    clamp_min,
+                    clamp_max,
+                    max_batches=args.eval_batches_adv,
+                )
                 adv_error = 1.0 - adv_acc
 
                 # Ensure dropout not a confound for verification (safe for all)
                 remove_dropout_layers(model)
 
                 attr = evaluate_attribution_metrics(
-                    model, test_set, device,
-                    eps=eps, alpha=alpha, pgd_steps=args.pgd_steps,
-                    clamp_min=clamp_min, clamp_max=clamp_max,
-                    ig_steps=args.ig_steps, K=args.K_attr, seed=args.seed,
-                    target_mode=args.target_mode
+                    model,
+                    test_set,
+                    device,
+                    eps=eps,
+                    alpha=alpha,
+                    pgd_steps=args.pgd_steps,
+                    clamp_min=clamp_min,
+                    clamp_max=clamp_max,
+                    ig_steps=args.ig_steps,
+                    K=args.K_attr,
+                    seed=args.seed,
+                    target_mode=args.target_mode,
                 )
 
                 row = {
@@ -109,7 +214,7 @@ def main():
                     "lambda_entropy": args.lambda_entropy,
                     "clean_acc": clean,
                     "adv_error": adv_error,
-                    **attr
+                    **attr,
                 }
                 append_csv(table1_csv, row, header)
                 print("Wrote row:", row)
@@ -117,39 +222,83 @@ def main():
         print("DONE. CSV:", table1_csv)
 
     elif args.mode == "lambda":
-        # Typically run MNIST+SimpleCNN for the lambda table
-        header = ["dataset", "model", "seed", "lambda_entropy", "clean_acc",
-                  "adv_error", "entropy_mean", "ads_mean", "ads_adv_mean", "crown_rate"]
+        header = [
+            "dataset",
+            "model",
+            "seed",
+            "lambda_entropy",
+            "clean_acc",
+            "adv_error",
+            "entropy_mean",
+            "ads_mean",
+            "ads_adv_mean",
+            "crown_rate",
+        ]
         lam_list = [float(x.strip()) for x in args.lambda_list.split(",")]
 
         for lam in lam_list:
             for ds in datasets:
                 train_loader, test_loader, test_set, clamp_min, clamp_max, eps = get_loaders(
                     ds, args.batch)
+
                 for m in models:
                     model = get_model(m, ds).to(device)
+                    model = maybe_compile(model, device)
+
                     opt = optim.Adam(model.parameters(), lr=args.lr)
-                    for _ in range(args.epochs):
-                        train_one_epoch(model, train_loader, opt,
-                                        device, lambda_entropy=lam)
+
+                    train_with_early_stopping(
+                        model,
+                        train_loader,
+                        opt,
+                        device,
+                        epochs=args.epochs,
+                        lambda_entropy=lam,
+                        scaler=scaler,
+                        patience=args.patience,
+                        min_delta=args.min_delta,
+                    )
 
                     alpha = eps / 8.0
                     clean = accuracy(model, test_loader, device)
-                    adv_acc = pgd_accuracy(model, test_loader, device, eps, alpha, args.pgd_steps,
-                                           clamp_min, clamp_max, max_batches=args.eval_batches_adv)
+                    adv_acc = pgd_accuracy(
+                        model,
+                        test_loader,
+                        device,
+                        eps,
+                        alpha,
+                        args.pgd_steps,
+                        clamp_min,
+                        clamp_max,
+                        max_batches=args.eval_batches_adv,
+                    )
                     adv_error = 1.0 - adv_acc
 
                     remove_dropout_layers(model)
                     attr = evaluate_attribution_metrics(
-                        model, test_set, device,
-                        eps=eps, alpha=alpha, pgd_steps=args.pgd_steps,
-                        clamp_min=clamp_min, clamp_max=clamp_max,
-                        ig_steps=args.ig_steps, K=args.K_attr, seed=args.seed,
-                        target_mode=args.target_mode
+                        model,
+                        test_set,
+                        device,
+                        eps=eps,
+                        alpha=alpha,
+                        pgd_steps=args.pgd_steps,
+                        clamp_min=clamp_min,
+                        clamp_max=clamp_max,
+                        ig_steps=args.ig_steps,
+                        K=args.K_attr,
+                        seed=args.seed,
+                        target_mode=args.target_mode,
                     )
 
-                    row = {"dataset": ds, "model": m, "seed": args.seed, "lambda_entropy": lam,
-                           "clean_acc": clean, "adv_error": adv_error, **attr}
+                    row = {
+                        "dataset": ds,
+                        "model": m,
+                        "seed": args.seed,
+                        "lambda_entropy": lam,
+                        "clean_acc": clean,
+                        "adv_error": adv_error,
+                        **attr,
+                    }
                     append_csv(table4_csv, row, header)
                     print("Wrote row:", row)
 
@@ -158,22 +307,42 @@ def main():
     elif args.mode == "baseline":
         # Baseline sensitivity: keep it focused (paper typically MNIST + SimpleCNN)
         # We'll compute ADS under several baseline pairs and log mean over K samples.
-        # We implement this by reusing attribution metrics but writing extra columns.
-        # For simplicity: we log ADS(zero,blur) as ads_mean (main), and add noise/uniform variants.
-        from triguard.attributions import blurred_baseline, integrated_gradients, ads_baseline
+        from triguard.attributions import blurred_baseline, ads_baseline
 
-        header = ["dataset", "model", "seed", "K", "ads_zero_blur", "ads_zero_noise",
-                  "ads_zero_uniform", "ads_blur_noise", "ads_blur_uniform", "ads_noise_uniform"]
+        header = [
+            "dataset",
+            "model",
+            "seed",
+            "K",
+            "ads_zero_blur",
+            "ads_zero_noise",
+            "ads_zero_uniform",
+            "ads_blur_noise",
+            "ads_blur_uniform",
+            "ads_noise_uniform",
+        ]
 
         for ds in datasets:
             train_loader, test_loader, test_set, clamp_min, clamp_max, eps = get_loaders(
                 ds, args.batch)
+
             for m in models:
                 model = get_model(m, ds).to(device)
+                model = maybe_compile(model, device)
+
                 opt = optim.Adam(model.parameters(), lr=args.lr)
-                for _ in range(args.epochs):
-                    train_one_epoch(model, train_loader, opt,
-                                    device, lambda_entropy=args.lambda_entropy)
+
+                train_with_early_stopping(
+                    model,
+                    train_loader,
+                    opt,
+                    device,
+                    epochs=args.epochs,
+                    lambda_entropy=args.lambda_entropy,
+                    scaler=scaler,
+                    patience=args.patience,
+                    min_delta=args.min_delta,
+                )
 
                 rng = np.random.default_rng(args.seed)
                 idxs = rng.choice(len(test_set), size=min(
@@ -200,21 +369,29 @@ def main():
                         model, x, target, b0, b_blur, steps=args.ig_steps))
                     vals["ads_zero_noise"].append(ads_baseline(
                         model, x, target, b0, b_noise, steps=args.ig_steps))
-                    vals["ads_zero_uniform"].append(ads_baseline(
-                        model, x, target, b0, b_uniform, steps=args.ig_steps))
-                    vals["ads_blur_noise"].append(ads_baseline(
-                        model, x, target, b_blur, b_noise, steps=args.ig_steps))
-                    vals["ads_blur_uniform"].append(ads_baseline(
-                        model, x, target, b_blur, b_uniform, steps=args.ig_steps))
-                    vals["ads_noise_uniform"].append(ads_baseline(
-                        model, x, target, b_noise, b_uniform, steps=args.ig_steps))
+                    vals["ads_zero_uniform"].append(
+                        ads_baseline(model, x, target, b0,
+                                     b_uniform, steps=args.ig_steps)
+                    )
+                    vals["ads_blur_noise"].append(
+                        ads_baseline(model, x, target, b_blur,
+                                     b_noise, steps=args.ig_steps)
+                    )
+                    vals["ads_blur_uniform"].append(
+                        ads_baseline(model, x, target, b_blur,
+                                     b_uniform, steps=args.ig_steps)
+                    )
+                    vals["ads_noise_uniform"].append(
+                        ads_baseline(model, x, target, b_noise,
+                                     b_uniform, steps=args.ig_steps)
+                    )
 
                 row = {
                     "dataset": ds,
                     "model": m,
                     "seed": args.seed,
                     "K": len(idxs),
-                    **{k: float(np.mean(v)) for k, v in vals.items()}
+                    **{k: float(np.mean(v)) for k, v in vals.items()},
                 }
                 append_csv(table2_csv, row, header)
                 print("Wrote row:", row)
@@ -223,28 +400,58 @@ def main():
 
     elif args.mode == "faithfulness":
         # Faithfulness tables + curves (IG vs SmoothGrad^2)
-        header = ["dataset", "model", "seed", "K", "ig_del_auc_mean",
-                  "ig_ins_auc_mean", "sg2_del_auc_mean", "sg2_ins_auc_mean"]
+        header = [
+            "dataset",
+            "model",
+            "seed",
+            "K",
+            "ig_del_auc_mean",
+            "ig_ins_auc_mean",
+            "sg2_del_auc_mean",
+            "sg2_ins_auc_mean",
+        ]
 
         for ds in datasets:
             train_loader, test_loader, test_set, clamp_min, clamp_max, eps = get_loaders(
                 ds, args.batch)
+
             for m in models:
                 model = get_model(m, ds).to(device)
+                model = maybe_compile(model, device)
+
                 opt = optim.Adam(model.parameters(), lr=args.lr)
-                for _ in range(args.epochs):
-                    train_one_epoch(model, train_loader, opt,
-                                    device, lambda_entropy=args.lambda_entropy)
+
+                train_with_early_stopping(
+                    model,
+                    train_loader,
+                    opt,
+                    device,
+                    epochs=args.epochs,
+                    lambda_entropy=args.lambda_entropy,
+                    scaler=scaler,
+                    patience=args.patience,
+                    min_delta=args.min_delta,
+                )
 
                 res = evaluate_faithfulness(
-                    model, test_set, device,
-                    K=args.K_faith, ig_steps=args.ig_steps, delins_steps=args.delins_steps,
-                    seed=args.seed, baseline_mode="zero", target_mode=args.target_mode,
-                    smoothgrad_noise=0.1, smoothgrad_samples=50
+                    model,
+                    test_set,
+                    device,
+                    K=args.K_faith,
+                    ig_steps=args.ig_steps,
+                    delins_steps=args.delins_steps,
+                    seed=args.seed,
+                    baseline_mode="zero",
+                    target_mode=args.target_mode,
+                    smoothgrad_noise=0.1,
+                    smoothgrad_samples=50,
                 )
 
                 row = {
-                    "dataset": ds, "model": m, "seed": args.seed, "K": args.K_faith,
+                    "dataset": ds,
+                    "model": m,
+                    "seed": args.seed,
+                    "K": args.K_faith,
                     "ig_del_auc_mean": res["ig_del_auc_mean"],
                     "ig_ins_auc_mean": res["ig_ins_auc_mean"],
                     "sg2_del_auc_mean": res["sg2_del_auc_mean"],

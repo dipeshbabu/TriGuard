@@ -24,7 +24,7 @@ def train_one_epoch(model, loader, opt, device, lambda_entropy: float, scaler=No
         opt.zero_grad(set_to_none=True)
 
         if use_amp and scaler is not None:
-            with torch.autocast(device_type="cuda", dtype=torch.float16):
+            with torch.amp.autocast("cuda", dtype=torch.float16):
                 logits = model(x)
                 ce = F.cross_entropy(logits, y)
 
