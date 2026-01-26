@@ -27,9 +27,11 @@ def set_seed(seed: int):
 
 
 def maybe_compile(model: torch.nn.Module, device: torch.device):
-    # torch.compile is PyTorch 2.x; guard so script still runs on older versions.
-    if device.type == "cuda" and hasattr(torch, "compile"):
-        return torch.compile(model)
+    # A100 / CUDA speedups: channels_last + torch.compile (PyTorch 2.x)
+    if device.type == "cuda":
+        model = model.to(memory_format=torch.channels_last)
+        if hasattr(torch, "compile"):
+            model = torch.compile(model)
     return model
 
 
@@ -41,7 +43,7 @@ def train_with_early_stopping(
     epochs: int,
     lambda_entropy: float,
     scaler=None,
-    patience: int = 1,
+    patience: int = 3,
     min_delta: float = 1e-4,
 ):
     best = float("inf")
@@ -57,11 +59,8 @@ def train_with_early_stopping(
             scaler=scaler,
         )
 
-        # Robust in case train_one_epoch returns (loss, ...)
         if isinstance(loss, (tuple, list)):
             loss = loss[0]
-
-        # If loss isn't returned, we can't early-stop reliably; just continue training.
         if loss is None:
             continue
 
@@ -116,11 +115,29 @@ def main():
     p.add_argument("--patience", type=int, default=3)
     p.add_argument("--min_delta", type=float, default=1e-4)
 
+    # speed / iteration mode
+    p.add_argument("--fast", action="store_true")
+
     args = p.parse_args()
     set_seed(args.seed)
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+
+    # A100 / CUDA speedups
+    torch.backends.cudnn.benchmark = True
+    torch.set_float32_matmul_precision("high")
+    # Optional TF32 toggles (usually safe + faster on A100). Uncomment if desired.
+    # torch.backends.cuda.matmul.allow_tf32 = True
+    # torch.backends.cudnn.allow_tf32 = True
+
     scaler = torch.amp.GradScaler("cuda") if device.type == "cuda" else None
+
+    if args.fast:
+        args.epochs = min(args.epochs, 3)
+        args.eval_batches_adv = min(args.eval_batches_adv, 3)
+        args.K_attr = min(args.K_attr, 50)
+        args.K_faith = min(args.K_faith, 20)
+        args.ig_steps = min(args.ig_steps, 25)
 
     datasets = ["mnist", "fashionmnist",
                 "cifar10"] if args.dataset is None else [args.dataset]
@@ -172,9 +189,7 @@ def main():
                     min_delta=args.min_delta,
                 )
 
-                # alpha heuristic: eps/8 is common
                 alpha = eps / 8.0
-
                 clean = accuracy(model, test_loader, device)
                 adv_acc = pgd_accuracy(
                     model,
@@ -189,7 +204,6 @@ def main():
                 )
                 adv_error = 1.0 - adv_acc
 
-                # Ensure dropout not a confound for verification (safe for all)
                 remove_dropout_layers(model)
 
                 attr = evaluate_attribution_metrics(
@@ -305,8 +319,6 @@ def main():
         print("DONE. CSV:", table4_csv)
 
     elif args.mode == "baseline":
-        # Baseline sensitivity: keep it focused (paper typically MNIST + SimpleCNN)
-        # We'll compute ADS under several baseline pairs and log mean over K samples.
         from triguard.attributions import blurred_baseline, ads_baseline
 
         header = [
@@ -356,7 +368,6 @@ def main():
                     y = int(y)
                     x = x.to(device).unsqueeze(0)
 
-                    # target consistent
                     target = y if args.target_mode == "truth" else int(
                         model(x).argmax(dim=1).item())
 
@@ -369,14 +380,10 @@ def main():
                         model, x, target, b0, b_blur, steps=args.ig_steps))
                     vals["ads_zero_noise"].append(ads_baseline(
                         model, x, target, b0, b_noise, steps=args.ig_steps))
-                    vals["ads_zero_uniform"].append(
-                        ads_baseline(model, x, target, b0,
-                                     b_uniform, steps=args.ig_steps)
-                    )
-                    vals["ads_blur_noise"].append(
-                        ads_baseline(model, x, target, b_blur,
-                                     b_noise, steps=args.ig_steps)
-                    )
+                    vals["ads_zero_uniform"].append(ads_baseline(
+                        model, x, target, b0, b_uniform, steps=args.ig_steps))
+                    vals["ads_blur_noise"].append(ads_baseline(
+                        model, x, target, b_blur, b_noise, steps=args.ig_steps))
                     vals["ads_blur_uniform"].append(
                         ads_baseline(model, x, target, b_blur,
                                      b_uniform, steps=args.ig_steps)
@@ -399,7 +406,6 @@ def main():
         print("DONE. CSV:", table2_csv)
 
     elif args.mode == "faithfulness":
-        # Faithfulness tables + curves (IG vs SmoothGrad^2)
         header = [
             "dataset",
             "model",
@@ -460,7 +466,6 @@ def main():
                 append_csv(faith_csv, row, header)
                 print("Wrote row:", row)
 
-                # Save a couple example curves per config
                 fig_dir = os.path.join(
                     args.out, "figures", "faithfulness", ds, m)
                 for i, (tag, del_curve, ins_curve) in enumerate(res["curves"][:4]):

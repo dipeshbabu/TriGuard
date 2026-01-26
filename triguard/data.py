@@ -38,7 +38,7 @@ def get_dataset(name: str):
         clamp_min, clamp_max = -1.0, 1.0
 
         # eps in pixel space = 8/255, convert to normalized space by dividing by std=0.5
-        eps = (8/255) / 0.5
+        eps = (8 / 255) / 0.5
 
     else:
         raise ValueError(f"Unknown dataset: {name}")
@@ -46,10 +46,25 @@ def get_dataset(name: str):
     return train, test, clamp_min, clamp_max, eps
 
 
-def get_loaders(name: str, batch_size: int, test_batch: int = 256, num_workers: int = 2):
+def get_loaders(name: str, batch_size: int, test_batch: int = 256, num_workers: int = 8):
     train, test, clamp_min, clamp_max, eps = get_dataset(name)
-    train_loader = DataLoader(train, batch_size=batch_size,
-                              shuffle=True, num_workers=num_workers, pin_memory=True)
-    test_loader = DataLoader(test, batch_size=test_batch,
-                             shuffle=False, num_workers=num_workers, pin_memory=True)
+
+    # A100 throughput improvements: pin_memory + persistent_workers (+ non_blocking in train loop)
+    train_loader = DataLoader(
+        train,
+        batch_size=batch_size,
+        shuffle=True,
+        num_workers=num_workers,
+        pin_memory=True,
+        persistent_workers=(num_workers > 0),
+    )
+    test_loader = DataLoader(
+        test,
+        batch_size=test_batch,
+        shuffle=False,
+        num_workers=num_workers,
+        pin_memory=True,
+        persistent_workers=(num_workers > 0),
+    )
+
     return train_loader, test_loader, test, clamp_min, clamp_max, eps
