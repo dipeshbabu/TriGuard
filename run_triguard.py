@@ -43,6 +43,7 @@ def train_with_early_stopping(
     epochs: int,
     lambda_entropy: float,
     scaler=None,
+    entropy_model=None,
     patience: int = 3,
     min_delta: float = 1e-4,
 ):
@@ -57,6 +58,7 @@ def train_with_early_stopping(
             device,
             lambda_entropy=lambda_entropy,
             scaler=scaler,
+            entropy_model=entropy_model,
         )
 
         if isinstance(loss, (tuple, list)):
@@ -117,6 +119,7 @@ def main():
 
     # speed / iteration mode
     p.add_argument("--fast", action="store_true")
+    p.add_argument("--deterministic", action="store_true")
 
     args = p.parse_args()
     set_seed(args.seed)
@@ -124,8 +127,13 @@ def main():
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
     # A100 / CUDA speedups
-    torch.backends.cudnn.benchmark = True
-    torch.set_float32_matmul_precision("high")
+    if args.deterministic:
+        torch.backends.cudnn.benchmark = False
+        torch.backends.cudnn.deterministic = True
+        torch.use_deterministic_algorithms(True)
+    else:
+        torch.backends.cudnn.benchmark = True
+        torch.set_float32_matmul_precision("high")
     # Optional TF32 toggles (usually safe + faster on A100). Uncomment if desired.
     # torch.backends.cuda.matmul.allow_tf32 = True
     # torch.backends.cudnn.allow_tf32 = True
@@ -172,8 +180,9 @@ def main():
                 ds, args.batch)
 
             for m in models:
-                model = get_model(m, ds).to(device)
-                model = maybe_compile(model, device)
+                base_model = get_model(m, ds).to(device)
+                model = maybe_compile(base_model, device)
+                entropy_model = base_model if model is not base_model else model
 
                 opt = optim.Adam(model.parameters(), lr=args.lr)
 
@@ -185,6 +194,7 @@ def main():
                     epochs=args.epochs,
                     lambda_entropy=args.lambda_entropy,
                     scaler=scaler,
+                    entropy_model=entropy_model,
                     patience=args.patience,
                     min_delta=args.min_delta,
                 )
@@ -256,8 +266,9 @@ def main():
                     ds, args.batch)
 
                 for m in models:
-                    model = get_model(m, ds).to(device)
-                    model = maybe_compile(model, device)
+                    base_model = get_model(m, ds).to(device)
+                    model = maybe_compile(base_model, device)
+                    entropy_model = base_model if model is not base_model else model
 
                     opt = optim.Adam(model.parameters(), lr=args.lr)
 
@@ -269,6 +280,7 @@ def main():
                         epochs=args.epochs,
                         lambda_entropy=lam,
                         scaler=scaler,
+                        entropy_model=entropy_model,
                         patience=args.patience,
                         min_delta=args.min_delta,
                     )
@@ -339,8 +351,9 @@ def main():
                 ds, args.batch)
 
             for m in models:
-                model = get_model(m, ds).to(device)
-                model = maybe_compile(model, device)
+                base_model = get_model(m, ds).to(device)
+                model = maybe_compile(base_model, device)
+                entropy_model = base_model if model is not base_model else model
 
                 opt = optim.Adam(model.parameters(), lr=args.lr)
 
@@ -352,9 +365,12 @@ def main():
                     epochs=args.epochs,
                     lambda_entropy=args.lambda_entropy,
                     scaler=scaler,
+                    entropy_model=entropy_model,
                     patience=args.patience,
                     min_delta=args.min_delta,
                 )
+
+                remove_dropout_layers(model)
 
                 rng = np.random.default_rng(args.seed)
                 idxs = rng.choice(len(test_set), size=min(
@@ -422,8 +438,9 @@ def main():
                 ds, args.batch)
 
             for m in models:
-                model = get_model(m, ds).to(device)
-                model = maybe_compile(model, device)
+                base_model = get_model(m, ds).to(device)
+                model = maybe_compile(base_model, device)
+                entropy_model = base_model if model is not base_model else model
 
                 opt = optim.Adam(model.parameters(), lr=args.lr)
 
@@ -435,9 +452,12 @@ def main():
                     epochs=args.epochs,
                     lambda_entropy=args.lambda_entropy,
                     scaler=scaler,
+                    entropy_model=entropy_model,
                     patience=args.patience,
                     min_delta=args.min_delta,
                 )
+
+                remove_dropout_layers(model)
 
                 res = evaluate_faithfulness(
                     model,
