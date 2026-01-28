@@ -183,6 +183,7 @@ def main():
                 base_model = get_model(m, ds).to(device)
                 model = maybe_compile(base_model, device)
                 entropy_model = base_model if model is not base_model else model
+                eval_model = base_model if model is not base_model else model
 
                 opt = optim.Adam(model.parameters(), lr=args.lr)
 
@@ -200,9 +201,10 @@ def main():
                 )
 
                 alpha = eps / 8.0
-                clean = accuracy(model, test_loader, device)
+                remove_dropout_layers(eval_model)
+                clean = accuracy(eval_model, test_loader, device)
                 adv_acc = pgd_accuracy(
-                    model,
+                    eval_model,
                     test_loader,
                     device,
                     eps,
@@ -214,10 +216,8 @@ def main():
                 )
                 adv_error = 1.0 - adv_acc
 
-                remove_dropout_layers(model)
-
                 attr = evaluate_attribution_metrics(
-                    model,
+                    eval_model,
                     test_set,
                     device,
                     eps=eps,
@@ -269,6 +269,7 @@ def main():
                     base_model = get_model(m, ds).to(device)
                     model = maybe_compile(base_model, device)
                     entropy_model = base_model if model is not base_model else model
+                    eval_model = base_model if model is not base_model else model
 
                     opt = optim.Adam(model.parameters(), lr=args.lr)
 
@@ -286,9 +287,10 @@ def main():
                     )
 
                     alpha = eps / 8.0
-                    clean = accuracy(model, test_loader, device)
+                    remove_dropout_layers(eval_model)
+                    clean = accuracy(eval_model, test_loader, device)
                     adv_acc = pgd_accuracy(
-                        model,
+                        eval_model,
                         test_loader,
                         device,
                         eps,
@@ -300,9 +302,8 @@ def main():
                     )
                     adv_error = 1.0 - adv_acc
 
-                    remove_dropout_layers(model)
                     attr = evaluate_attribution_metrics(
-                        model,
+                        eval_model,
                         test_set,
                         device,
                         eps=eps,
@@ -354,6 +355,7 @@ def main():
                 base_model = get_model(m, ds).to(device)
                 model = maybe_compile(base_model, device)
                 entropy_model = base_model if model is not base_model else model
+                eval_model = base_model if model is not base_model else model
 
                 opt = optim.Adam(model.parameters(), lr=args.lr)
 
@@ -370,7 +372,7 @@ def main():
                     min_delta=args.min_delta,
                 )
 
-                remove_dropout_layers(model)
+                remove_dropout_layers(eval_model)
 
                 rng = np.random.default_rng(args.seed)
                 idxs = rng.choice(len(test_set), size=min(
@@ -385,7 +387,7 @@ def main():
                     x = x.to(device).unsqueeze(0)
 
                     target = y if args.target_mode == "truth" else int(
-                        model(x).argmax(dim=1).item())
+                        eval_model(x).argmax(dim=1).item())
 
                     b0 = torch.zeros_like(x)
                     b_blur = blurred_baseline(x)
@@ -393,19 +395,19 @@ def main():
                     b_uniform = torch.rand_like(x)
 
                     vals["ads_zero_blur"].append(ads_baseline(
-                        model, x, target, b0, b_blur, steps=args.ig_steps))
+                        eval_model, x, target, b0, b_blur, steps=args.ig_steps))
                     vals["ads_zero_noise"].append(ads_baseline(
-                        model, x, target, b0, b_noise, steps=args.ig_steps))
+                        eval_model, x, target, b0, b_noise, steps=args.ig_steps))
                     vals["ads_zero_uniform"].append(ads_baseline(
-                        model, x, target, b0, b_uniform, steps=args.ig_steps))
+                        eval_model, x, target, b0, b_uniform, steps=args.ig_steps))
                     vals["ads_blur_noise"].append(ads_baseline(
-                        model, x, target, b_blur, b_noise, steps=args.ig_steps))
+                        eval_model, x, target, b_blur, b_noise, steps=args.ig_steps))
                     vals["ads_blur_uniform"].append(
-                        ads_baseline(model, x, target, b_blur,
+                        ads_baseline(eval_model, x, target, b_blur,
                                      b_uniform, steps=args.ig_steps)
                     )
                     vals["ads_noise_uniform"].append(
-                        ads_baseline(model, x, target, b_noise,
+                        ads_baseline(eval_model, x, target, b_noise,
                                      b_uniform, steps=args.ig_steps)
                     )
 
@@ -441,6 +443,7 @@ def main():
                 base_model = get_model(m, ds).to(device)
                 model = maybe_compile(base_model, device)
                 entropy_model = base_model if model is not base_model else model
+                eval_model = base_model if model is not base_model else model
 
                 opt = optim.Adam(model.parameters(), lr=args.lr)
 
@@ -457,10 +460,10 @@ def main():
                     min_delta=args.min_delta,
                 )
 
-                remove_dropout_layers(model)
+                remove_dropout_layers(eval_model)
 
                 res = evaluate_faithfulness(
-                    model,
+                    eval_model,
                     test_set,
                     device,
                     K=args.K_faith,
