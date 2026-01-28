@@ -15,12 +15,21 @@ def entropy_reg_term(model, x, y, eps=1e-10):
     return H
 
 
-def train_one_epoch(model, loader, opt, device, lambda_entropy: float, scaler=None):
+def train_one_epoch(
+    model,
+    loader,
+    opt,
+    device,
+    lambda_entropy: float,
+    scaler=None,
+    entropy_model=None,
+):
     model.train()
     total = 0.0
     n = 0
 
     use_amp = (device.type == "cuda") and (scaler is not None)
+    entropy_model = entropy_model or model
 
     for x, y in loader:
         x = x.to(device, non_blocking=True)
@@ -42,9 +51,9 @@ def train_one_epoch(model, loader, opt, device, lambda_entropy: float, scaler=No
                 # Higher-order autograd + torch.compile can be finicky; disable compile around this block.
                 if hasattr(torch, "_dynamo"):
                     with torch._dynamo.disable():
-                        H = entropy_reg_term(model, x, y)
+                        H = entropy_reg_term(entropy_model, x, y)
                 else:
-                    H = entropy_reg_term(model, x, y)
+                    H = entropy_reg_term(entropy_model, x, y)
                 loss = ce.float() + lambda_entropy * H
             else:
                 loss = ce.float()
@@ -56,7 +65,7 @@ def train_one_epoch(model, loader, opt, device, lambda_entropy: float, scaler=No
             logits = model(x)
             ce = F.cross_entropy(logits, y)
             if lambda_entropy > 0:
-                H = entropy_reg_term(model, x, y)
+                H = entropy_reg_term(entropy_model, x, y)
                 loss = ce + lambda_entropy * H
             else:
                 loss = ce
