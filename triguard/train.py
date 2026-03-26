@@ -3,13 +3,11 @@ import torch.nn.functional as F
 
 
 def entropy_reg_term(model, x, y, eps=1e-10):
-    # Detach from prior graph; we only need grads wrt input for the entropy term.
-    # Dropped clone() for speed (detach() is enough here).
     x = x.detach().requires_grad_(True)
     logits = model(x)
     ce = F.cross_entropy(logits, y)
     grad = torch.autograd.grad(ce, x, create_graph=True, retain_graph=True)[0]
-    g = grad.abs().view(grad.size(0), -1)
+    g = grad.abs().reshape(grad.size(0), -1)
     p = g / (g.sum(dim=1, keepdim=True) + eps)
     H = -(p * torch.log(p + eps)).sum(dim=1).mean()
     return H
@@ -35,7 +33,6 @@ def train_one_epoch(
         x = x.to(device, non_blocking=True)
         y = y.to(device, non_blocking=True)
 
-        # A100 likes channels_last for NCHW images
         if x.dim() == 4:
             x = x.contiguous(memory_format=torch.channels_last)
 
@@ -46,14 +43,9 @@ def train_one_epoch(
                 logits = model(x)
                 ce = F.cross_entropy(logits, y)
 
-            # entropy term needs input grads; keep it in fp32 to avoid instability
             if lambda_entropy > 0:
-                # Higher-order autograd + torch.compile can be finicky; disable compile around this block.
-                if hasattr(torch, "_dynamo"):
-                    with torch._dynamo.disable():
-                        H = entropy_reg_term(entropy_model, x, y)
-                else:
-                    H = entropy_reg_term(entropy_model, x, y)
+                # Keep entropy term in fp32 for stability.
+                H = entropy_reg_term(entropy_model, x.float(), y)
                 loss = ce.float() + lambda_entropy * H
             else:
                 loss = ce.float()
