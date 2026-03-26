@@ -1,2 +1,1 @@
-source .venv/bin/activate
-python make_tables.py --out outputs/icml2026
+python -m triguard.make_tables --out outputs/icml2026

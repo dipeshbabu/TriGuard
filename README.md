@@ -1,34 +1,60 @@
-# 🛡️ TriGuard: Testing Model Safety with Attribution Entropy, Verification, and Drift
+# TriGuard: Multi Axis Evaluation of Robustness and Explanation Stability
 
-TriGuard is a diagnostic toolkit for evaluating the **safety** of image classifiers across three critical dimensions:
+TriGuard is a practical evaluation toolkit for studying when prediction robustness, certification aware checks, and explanation stability disagree in image classifiers.
 
-- ✅ **Robustness**: Adversarial accuracy and certified verification
-- 🧠 **Interpretability**: Attribution entropy and drift
-- 📊 **Faithfulness**: Saliency effectiveness under input perturbations
+## Main outputs
 
-We introduce **Attribution Drift Score (ADS)** and demonstrate how entropy-regularized training improves explanation stability even in models with high adversarial performance. For methodology, analysis, and results, see the full paper: [![Paper](https://img.shields.io/badge/Paper-red)](https://arxiv.org/abs/2506.14217)
+The workshop aligned version of the repo centers on:
 
----
+- clean accuracy
+- PGD error
+- bound check rate
+- CROWN rate
+- attribution entropy
+- Attribution Drift Score
 
-## 🚀 Features
+Appendix only workflows also support:
 
-- 📈 Multi-axis safety metrics: Accuracy, adversarial error, drift, entropy, SmoothGrad², and CROWN-IBP
-- 🔬 Saliency faithfulness via **Deletion/Insertion AUC** curves
-- 🔁 Evaluation with and without entropy-regularized training
-- ✅ Supports multiple models (SimpleCNN, ResNet, DenseNet, MobileNetV3)
-- 📦 Datasets: MNIST, FashionMNIST, CIFAR-10
+- baseline sensitivity for Attribution Drift Score
+- faithfulness via deletion and insertion AUC
+- SmoothGrad squared comparison
 
----
+## Supported datasets
 
-## 🔖 Citation
+- MNIST
+- FashionMNIST
+- CIFAR10
+- CIFAR100
 
-If you use this codebase or find our work helpful, please cite:
+## Supported models
 
-```bibtex
-@article{mahato2025triguard,
-  title={TriGuard: Testing Model Safety with Attribution Entropy, Verification, and Drift},
-  author={Mahato, Dipesh Tharu and Poudel, Rohan and Dhungana, Pramod},
-  journal={arXiv preprint arXiv:2506.14217},
-  year={2025}
-}
+- SimpleCNN
+- ResNet50
+- ResNet101
+- MobileNetV3 Large
+- DenseNet121
+- ViT B 16
+
+## Suggested workflow
+
+Run the main benchmark with multiple seeds:
+
+```bash
+bash scripts/01_run_main_table.sh
 ```
+
+Run the lambda ablation:
+
+```bash
+bash scripts/02_run_lambda_ablation.sh
+```
+
+Generate LaTeX tables:
+
+```bash
+bash scripts/05_make_tables.sh
+```
+
+## Notes on framing
+
+This codebase is aligned with the workshop version of the paper, where TriGuard is presented as a multi axis diagnostic framework rather than a complete safety certificate. The main paper path focuses on robustness and explanation stability. Appendix workflows remain available for baseline sensitivity and faithfulness checks.
