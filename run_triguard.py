@@ -44,12 +44,17 @@ def set_seed(seed: int):
     torch.cuda.manual_seed_all(seed)
 
 
-def maybe_compile(model: torch.nn.Module, device: torch.device, model_name: str):
+def maybe_compile(
+    model: torch.nn.Module,
+    device: torch.device,
+    model_name: str,
+    enable_compile: bool = False,
+):
     if device.type == "cuda":
         model = model.to(memory_format=torch.channels_last)
-        # ViT training uses higher-order gradients for the entropy term, and the
-        # compiled attention path is less reliable there than eager mode.
-        if hasattr(torch, "compile") and model_name.lower() not in {"vit_b_16", "vit"}:
+        # torch.compile can improve throughput, but it has been less reliable
+        # than eager mode across our benchmark settings.
+        if enable_compile and hasattr(torch, "compile") and model_name.lower() not in {"vit_b_16", "vit"}:
             model = torch.compile(model)
     return model
 
@@ -210,7 +215,7 @@ def run_one_setting(args, seed: int, ds: str, model_name: str, lam: float, devic
     baseline_max = float(meta["baseline_max"])
 
     base_model = get_model(model_name, ds, num_classes=num_classes).to(device)
-    model = maybe_compile(base_model, device, model_name)
+    model = maybe_compile(base_model, device, model_name, enable_compile=args.compile)
     entropy_model = base_model if model is not base_model else model
     eval_model = base_model if model is not base_model else model
     training_setup = build_training_setup(args, ds, model_name, model, epochs)
@@ -222,7 +227,7 @@ def run_one_setting(args, seed: int, ds: str, model_name: str, lam: float, devic
         f"[Train Config] {ds}/{model_name}: "
         f"epochs={epochs}, optimizer={training_setup['optimizer_name']}, "
         f"lr={training_setup['lr']}, scheduler={'cosine' if scheduler is not None else 'none'}, "
-        f"grad_clip={grad_clip}"
+        f"grad_clip={grad_clip}, compile={args.compile}"
     )
 
     ckpt_path = None
@@ -389,6 +394,7 @@ def main():
     p.add_argument("--num_workers", type=int, default=None)
     p.add_argument("--bound_probe_samples", type=int, default=16)
     p.add_argument("--grad_clip", type=float, default=None)
+    p.add_argument("--compile", action="store_true")
     args = p.parse_args()
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
