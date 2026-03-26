@@ -41,6 +41,8 @@ Appendix only workflows also support:
 
 ## Suggested workflow
 
+The default training policy is dataset-aware: MNIST and FashionMNIST use 5 epochs by default, CIFAR10 uses 15, and CIFAR100 uses 20 unless you override `--epochs`.
+
 Run the main benchmark with multiple seeds:
 
 ```bash
