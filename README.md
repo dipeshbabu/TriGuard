@@ -10,7 +10,6 @@ This repo is locked to Python 3.10.x and pinned to 3.10.12 via `.python-version`
 python3.10 -m venv .venv
 source .venv/bin/activate
 
-pip install ./auto_LiRPA
 bash scripts/00_install.sh
 ```
 
