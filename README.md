@@ -30,8 +30,6 @@ Appendix only workflows also support:
 
 - SimpleCNN
 - ResNet50
-- ResNet101
-- MobileNetV3 Large
 - DenseNet121
 - ViT B 16
 
