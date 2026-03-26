@@ -1,7 +1,6 @@
 import argparse
 import os
 import random
-from pathlib import Path
 
 import numpy as np
 import torch
@@ -39,10 +38,12 @@ def set_seed(seed: int):
     torch.cuda.manual_seed_all(seed)
 
 
-def maybe_compile(model: torch.nn.Module, device: torch.device):
+def maybe_compile(model: torch.nn.Module, device: torch.device, model_name: str):
     if device.type == "cuda":
         model = model.to(memory_format=torch.channels_last)
-        if hasattr(torch, "compile"):
+        # ViT training uses higher-order gradients for the entropy term, and the
+        # compiled attention path is less reliable there than eager mode.
+        if hasattr(torch, "compile") and model_name.lower() not in {"vit_b_16", "vit"}:
             model = torch.compile(model)
     return model
 
@@ -140,7 +141,7 @@ def run_one_setting(args, seed: int, ds: str, model_name: str, lam: float, devic
     baseline_max = float(meta["baseline_max"])
 
     base_model = get_model(model_name, ds, num_classes=num_classes).to(device)
-    model = maybe_compile(base_model, device)
+    model = maybe_compile(base_model, device, model_name)
     entropy_model = base_model if model is not base_model else model
     eval_model = base_model if model is not base_model else model
     opt = optim.Adam(model.parameters(), lr=args.lr)
