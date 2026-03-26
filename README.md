@@ -7,8 +7,8 @@ TriGuard is a practical evaluation toolkit for studying when prediction robustne
 This repo is locked to Python 3.10.x and pinned to 3.10.12 via `.python-version`. Create and activate a Python 3.10 virtual environment first, then run the install script:
 
 ```bash
-python3.10 -m venv .venv
-source .venv/bin/activate
+python3.10 -m venv .triguard
+source .triguard/bin/activate
 
 bash scripts/00_install.sh
 ```
