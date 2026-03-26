@@ -2,6 +2,17 @@
 
 TriGuard is a practical evaluation toolkit for studying when prediction robustness, certification aware checks, and explanation stability disagree in image classifiers.
 
+## Setup
+
+This repo is locked to Python 3.10.x and pinned to 3.10.12 via `.python-version`. Create and activate a Python 3.10 virtual environment first, then run the install script:
+
+```bash
+python3.10 -m venv .venv
+source .venv/bin/activate
+
+bash scripts/00_install.sh
+```
+
 ## Main outputs
 
 The workshop aligned version of the repo centers on:
@@ -34,7 +45,7 @@ Run the main benchmark with multiple seeds:
 
 ```bash
 bash scripts/01_run_main_table.sh
-````
+```
 
 Run the lambda ablation:
 
