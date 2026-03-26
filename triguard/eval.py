@@ -19,6 +19,27 @@ from .faithfulness import faithfulness_auc
 from .verify import crown_ibp_certify, empirical_probe
 
 
+def _append_finite(values: list[float], value: float | None):
+    if value is None:
+        return
+    if np.isfinite(value):
+        values.append(float(value))
+
+
+def _safe_mean(values: list[float], default: float = float("nan")) -> float:
+    if not values:
+        return default
+    return float(np.mean(values))
+
+
+def _report_skipped(metric_name: str, valid_count: int, total_count: int):
+    skipped = total_count - valid_count
+    if skipped > 0:
+        print(
+            f"[Metric Warning] Skipped {skipped}/{total_count} invalid samples while computing {metric_name}."
+        )
+
+
 @torch.no_grad()
 def accuracy(model, loader, device):
     model.eval()
@@ -91,18 +112,22 @@ def evaluate_main_metrics(
         b_blur = blurred_baseline(x)
 
         ig = integrated_gradients(model, x, target, b0, steps=ig_steps)
-        ent_list.append(attribution_entropy(ig))
-        ads_list.append(ads_baseline(model, x, target, b0, b_blur, steps=ig_steps))
+        _append_finite(ent_list, attribution_entropy(ig))
+        _append_finite(ads_list, ads_baseline(model, x, target, b0, b_blur, steps=ig_steps))
 
         bound_ok = empirical_probe(model, x.squeeze(0), bound_probe_samples, eps, clamp_min, clamp_max, device)
         bound_list.append(int(bound_ok))
         crown_list.append(int(crown_ibp_certify(model, x.squeeze(0), y, eps, device)) if do_crown else 0)
 
+    _report_skipped("entropy_mean", len(ent_list), len(idxs))
+    _report_skipped("ads_mean", len(ads_list), len(idxs))
     return {
-        "entropy_mean": float(np.mean(ent_list)),
-        "ads_mean": float(np.mean(ads_list)),
-        "bound_check_rate": float(np.mean(bound_list)),
-        "crown_rate": float(np.mean(crown_list)),
+        "entropy_mean": _safe_mean(ent_list),
+        "ads_mean": _safe_mean(ads_list),
+        "entropy_valid_n": int(len(ent_list)),
+        "ads_valid_n": int(len(ads_list)),
+        "bound_check_rate": _safe_mean(bound_list),
+        "crown_rate": _safe_mean(crown_list),
     }
 
 
@@ -146,23 +171,34 @@ def evaluate_appendix_metrics(
 
         y_tensor = torch.tensor([y], device=device, dtype=torch.long)
         x_adv = pgd_linf(model, x, y_tensor, eps, alpha, pgd_steps, clamp_min, clamp_max, random_start=True)
-        ads_adv_list.append(ads_adv(model, x, x_adv, target, b0, steps=ig_steps))
+        ads_adv_value = ads_adv(model, x, x_adv, target, b0, steps=ig_steps)
+        if ads_adv_value is not None and np.isfinite(ads_adv_value):
+            ads_adv_list.append(float(ads_adv_value))
 
-        base_rows.append(
-            {
-                "ads_zero_blur": ads_baseline(model, x, target, b0, b_blur, steps=ig_steps),
-                "ads_zero_noise": ads_baseline(model, x, target, b0, b_noise, steps=ig_steps),
-                "ads_zero_uniform": ads_baseline(model, x, target, b0, b_uniform, steps=ig_steps),
-                "ads_blur_noise": ads_baseline(model, x, target, b_blur, b_noise, steps=ig_steps),
-                "ads_blur_uniform": ads_baseline(model, x, target, b_blur, b_uniform, steps=ig_steps),
-                "ads_noise_uniform": ads_baseline(model, x, target, b_noise, b_uniform, steps=ig_steps),
-            }
-        )
+        row = {
+            "ads_zero_blur": ads_baseline(model, x, target, b0, b_blur, steps=ig_steps),
+            "ads_zero_noise": ads_baseline(model, x, target, b0, b_noise, steps=ig_steps),
+            "ads_zero_uniform": ads_baseline(model, x, target, b0, b_uniform, steps=ig_steps),
+            "ads_blur_noise": ads_baseline(model, x, target, b_blur, b_noise, steps=ig_steps),
+            "ads_blur_uniform": ads_baseline(model, x, target, b_blur, b_uniform, steps=ig_steps),
+            "ads_noise_uniform": ads_baseline(model, x, target, b_noise, b_uniform, steps=ig_steps),
+        }
+        if all(value is not None and np.isfinite(value) for value in row.values()):
+            base_rows.append({key: float(value) for key, value in row.items()})
 
-    result = {"ads_adv_mean": float(np.mean(ads_adv_list))}
-    if base_rows:
-        for key in base_rows[0]:
-            result[key] = float(np.mean([row[key] for row in base_rows]))
+    _report_skipped("ads_adv_mean", len(ads_adv_list), len(idxs))
+    _report_skipped("baseline sensitivity metrics", len(base_rows), len(idxs))
+    result = {"ads_adv_mean": _safe_mean(ads_adv_list)}
+    baseline_keys = [
+        "ads_zero_blur",
+        "ads_zero_noise",
+        "ads_zero_uniform",
+        "ads_blur_noise",
+        "ads_blur_uniform",
+        "ads_noise_uniform",
+    ]
+    for key in baseline_keys:
+        result[key] = _safe_mean([row[key] for row in base_rows])
     return result
 
 
@@ -191,23 +227,28 @@ def evaluate_faithfulness(model, test_set, device, k=50, ig_steps=50, delins_ste
         baseline = torch.zeros_like(x)
         ig_attr = integrated_gradients(model, x, target, baseline, steps=ig_steps)
         ig_d, ig_i, del_curve, ins_curve = faithfulness_auc(model, x, target, ig_attr, steps=delins_steps, baseline=baseline)
-        ig_del.append(ig_d)
-        ig_ins.append(ig_i)
+        _append_finite(ig_del, ig_d)
+        _append_finite(ig_ins, ig_i)
 
         sg_attr = smoothgrad_squared(model, x, target, noise_level=smoothgrad_noise, n_samples=smoothgrad_samples)
         sg_d, sg_i, del_curve2, ins_curve2 = faithfulness_auc(model, x, target, sg_attr, steps=delins_steps, baseline=baseline)
-        sg_del.append(sg_d)
-        sg_ins.append(sg_i)
+        _append_finite(sg_del, sg_d)
+        _append_finite(sg_ins, sg_i)
 
         if t < keep_curves:
             curves.append(("IG", del_curve, ins_curve))
             curves.append(("SmoothGrad2", del_curve2, ins_curve2))
 
+    _report_skipped("ig_del_auc_mean", len(ig_del), len(idxs))
+    _report_skipped("ig_ins_auc_mean", len(ig_ins), len(idxs))
+    _report_skipped("sg2_del_auc_mean", len(sg_del), len(idxs))
+    _report_skipped("sg2_ins_auc_mean", len(sg_ins), len(idxs))
+
     return {
-        "ig_del_auc_mean": float(np.mean(ig_del)),
-        "ig_ins_auc_mean": float(np.mean(ig_ins)),
-        "sg2_del_auc_mean": float(np.mean(sg_del)),
-        "sg2_ins_auc_mean": float(np.mean(sg_ins)),
+        "ig_del_auc_mean": _safe_mean(ig_del),
+        "ig_ins_auc_mean": _safe_mean(ig_ins),
+        "sg2_del_auc_mean": _safe_mean(sg_del),
+        "sg2_ins_auc_mean": _safe_mean(sg_ins),
         "curves": curves,
     }
 

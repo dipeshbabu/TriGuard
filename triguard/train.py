@@ -41,6 +41,7 @@ def train_one_epoch(
     lambda_entropy: float,
     scaler=None,
     entropy_model=None,
+    grad_clip: float | None = None,
 ):
     model.train()
     total = 0.0
@@ -82,10 +83,15 @@ def train_one_epoch(
 
         if use_amp:
             scaler.scale(loss).backward()
+            if grad_clip is not None:
+                scaler.unscale_(opt)
+                torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=grad_clip)
             scaler.step(opt)
             scaler.update()
         else:
             loss.backward()
+            if grad_clip is not None:
+                torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=grad_clip)
             opt.step()
 
         total += float(loss.item()) * x.size(0)

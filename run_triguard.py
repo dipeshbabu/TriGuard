@@ -29,6 +29,12 @@ WORKSHOP_2026_GRID = {
 
 DATASET_ORDER = ["mnist", "fashionmnist", "cifar10", "cifar100"]
 MODEL_ORDER = ["simplecnn", "resnet50", "densenet121", "vit_b_16"]
+DEFAULT_EPOCHS = {
+    "mnist": 5,
+    "fashionmnist": 5,
+    "cifar10": 15,
+    "cifar100": 20,
+}
 
 
 def set_seed(seed: int):
@@ -54,6 +60,63 @@ def parse_seeds(seed: int, seeds_arg: str | None):
     return [int(x.strip()) for x in seeds_arg.split(",") if x.strip()]
 
 
+def resolve_epochs(args, dataset: str) -> int:
+    if args.epochs is not None:
+        return args.epochs
+    return DEFAULT_EPOCHS.get(dataset.lower(), 5)
+
+
+def build_training_setup(args, dataset: str, model_name: str, model, epochs: int):
+    dataset = dataset.lower()
+    model_name = model_name.lower()
+
+    if dataset in {"cifar10", "cifar100"} and model_name in {"resnet50", "densenet121"}:
+        lr = args.lr if args.lr is not None else 0.05
+        opt = optim.SGD(
+            model.parameters(),
+            lr=lr,
+            momentum=0.9,
+            weight_decay=5e-4,
+            nesterov=True,
+        )
+        scheduler = optim.lr_scheduler.CosineAnnealingLR(opt, T_max=max(epochs, 1))
+        grad_clip = args.grad_clip if args.grad_clip is not None else 1.0
+        return {
+            "optimizer": opt,
+            "scheduler": scheduler,
+            "grad_clip": grad_clip,
+            "optimizer_name": "sgd",
+            "lr": lr,
+        }
+
+    if dataset in {"cifar10", "cifar100"} and model_name in {"vit_b_16", "vit"}:
+        lr = args.lr if args.lr is not None else 3e-4
+        opt = optim.AdamW(
+            model.parameters(),
+            lr=lr,
+            weight_decay=0.05,
+        )
+        scheduler = optim.lr_scheduler.CosineAnnealingLR(opt, T_max=max(epochs, 1))
+        grad_clip = args.grad_clip if args.grad_clip is not None else 1.0
+        return {
+            "optimizer": opt,
+            "scheduler": scheduler,
+            "grad_clip": grad_clip,
+            "optimizer_name": "adamw",
+            "lr": lr,
+        }
+
+    lr = args.lr if args.lr is not None else 1e-3
+    opt = optim.Adam(model.parameters(), lr=lr)
+    return {
+        "optimizer": opt,
+        "scheduler": None,
+        "grad_clip": args.grad_clip,
+        "optimizer_name": "adam",
+        "lr": lr,
+    }
+
+
 def train_with_early_stopping(
     model,
     train_loader,
@@ -63,6 +126,8 @@ def train_with_early_stopping(
     lambda_entropy: float,
     scaler=None,
     entropy_model=None,
+    scheduler=None,
+    grad_clip: float | None = None,
     patience: int = 3,
     min_delta: float = 1e-4,
     ckpt_path: str | None = None,
@@ -80,7 +145,10 @@ def train_with_early_stopping(
             lambda_entropy=lambda_entropy,
             scaler=scaler,
             entropy_model=entropy_model,
+            grad_clip=grad_clip,
         )
+        if scheduler is not None:
+            scheduler.step()
         loss = float(loss)
         if loss < best - min_delta:
             best = loss
@@ -129,6 +197,7 @@ def get_experiment_grid(dataset: str | None, model: str | None):
 
 def run_one_setting(args, seed: int, ds: str, model_name: str, lam: float, device: torch.device, mode: str):
     set_seed(seed)
+    epochs = resolve_epochs(args, ds)
     train_loader, test_loader, test_set, clamp_min, clamp_max, eps, meta = get_loaders(
         ds,
         args.batch,
@@ -144,7 +213,17 @@ def run_one_setting(args, seed: int, ds: str, model_name: str, lam: float, devic
     model = maybe_compile(base_model, device, model_name)
     entropy_model = base_model if model is not base_model else model
     eval_model = base_model if model is not base_model else model
-    opt = optim.Adam(model.parameters(), lr=args.lr)
+    training_setup = build_training_setup(args, ds, model_name, model, epochs)
+    opt = training_setup["optimizer"]
+    scheduler = training_setup["scheduler"]
+    grad_clip = training_setup["grad_clip"]
+
+    print(
+        f"[Train Config] {ds}/{model_name}: "
+        f"epochs={epochs}, optimizer={training_setup['optimizer_name']}, "
+        f"lr={training_setup['lr']}, scheduler={'cosine' if scheduler is not None else 'none'}, "
+        f"grad_clip={grad_clip}"
+    )
 
     ckpt_path = None
     if args.save_ckpt:
@@ -159,11 +238,13 @@ def run_one_setting(args, seed: int, ds: str, model_name: str, lam: float, devic
         train_loader,
         opt,
         device,
-        epochs=args.epochs,
+        epochs=epochs,
         lambda_entropy=lam,
         scaler=(torch.amp.GradScaler("cuda")
                 if device.type == "cuda" else None),
         entropy_model=entropy_model,
+        scheduler=scheduler,
+        grad_clip=grad_clip,
         patience=args.patience,
         min_delta=args.min_delta,
         ckpt_path=ckpt_path,
@@ -281,9 +362,9 @@ def main():
     p.add_argument("--out", type=str, default="outputs/icml2026")
     p.add_argument("--seed", type=int, default=0)
     p.add_argument("--seeds", type=str, default="")
-    p.add_argument("--epochs", type=int, default=5)
+    p.add_argument("--epochs", type=int, default=None)
     p.add_argument("--batch", type=int, default=64)
-    p.add_argument("--lr", type=float, default=1e-3)
+    p.add_argument("--lr", type=float, default=None)
     p.add_argument("--lambda_entropy", type=float, default=0.05)
     p.add_argument("--ig_steps", type=int, default=50)
     p.add_argument("--pgd_steps", type=int, default=40)
@@ -307,6 +388,7 @@ def main():
     p.add_argument("--data_root", type=str, default="./data")
     p.add_argument("--num_workers", type=int, default=None)
     p.add_argument("--bound_probe_samples", type=int, default=16)
+    p.add_argument("--grad_clip", type=float, default=None)
     args = p.parse_args()
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -320,7 +402,8 @@ def main():
             torch.set_float32_matmul_precision("high")
 
     if args.fast:
-        args.epochs = min(args.epochs, 3)
+        if args.epochs is not None:
+            args.epochs = min(args.epochs, 3)
         args.eval_batches_adv = min(args.eval_batches_adv, 3)
         args.K_attr = min(args.K_attr, 50)
         args.K_faith = min(args.K_faith, 20)
@@ -342,6 +425,8 @@ def main():
             "crown_rate",
             "entropy_mean",
             "ads_mean",
+            "entropy_valid_n",
+            "ads_valid_n",
         ]
         for seed in seeds:
             for ds, model_name in experiment_pairs:
@@ -363,6 +448,8 @@ def main():
             "crown_rate",
             "entropy_mean",
             "ads_mean",
+            "entropy_valid_n",
+            "ads_valid_n",
         ]
         lam_list = [float(x.strip())
                     for x in args.lambda_list.split(",") if x.strip()]
