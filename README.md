@@ -10,6 +10,7 @@ This repo is locked to Python 3.10.x and pinned to 3.10.12 via `.python-version`
 python3.10 -m venv .venv
 source .venv/bin/activate
 
+pip install ./auto_LiRPA
 bash scripts/00_install.sh
 ```
 
@@ -70,6 +71,10 @@ Generate LaTeX tables:
 ```bash
 bash scripts/05_make_tables.sh
 ```
+
+## Acknowledgement
+
+This project uses the external [`auto_LiRPA`](https://github.com/Verified-Intelligence/auto_LiRPA) library for certification-aware verification components. A copy of that library is included in this repository under `auto_LiRPA/`.
 
 ## Notes on framing
 
