@@ -53,6 +53,18 @@ Run the lambda ablation:
 bash scripts/02_run_lambda_ablation.sh
 ```
 
+Run the baseline sensitivity appendix workflow:
+
+```bash
+bash scripts/03_run_baseline_sensitivity.sh
+```
+
+Run the faithfulness appendix workflow:
+
+```bash
+bash scripts/04_run_faithfulness.sh
+```
+
 Generate LaTeX tables:
 
 ```bash
