@@ -9,7 +9,11 @@ This repo is locked to Python 3.10.x and pinned to 3.10.12 via `.python-version`
 ```bash
 python3.10 -m venv .triguard
 source .triguard/bin/activate
+```
 
+After creating virtual environment install the required dependencies then follow instructions given in `Suggested workflow` section.
+
+```
 bash scripts/00_install.sh
 ```
 
