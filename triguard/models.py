@@ -1,13 +1,7 @@
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from torchvision.models import (
-    densenet121,
-    mobilenet_v3_large,
-    resnet50,
-    resnet101,
-    vit_b_16,
-)
+from torchvision.models import densenet121, resnet50, vit_b_16
 
 
 class SimpleCNN(nn.Module):
@@ -48,7 +42,8 @@ class VisionTransformerWrapper(nn.Module):
     def __init__(self, num_classes: int, grayscale: bool = False):
         super().__init__()
         self.to_rgb = GrayscaleToRGB() if grayscale else nn.Identity()
-        self.resize = nn.Upsample(size=(224, 224), mode="bilinear", align_corners=False)
+        self.resize = nn.Upsample(
+            size=(224, 224), mode="bilinear", align_corners=False)
         self.backbone = vit_b_16(num_classes=num_classes)
 
     def forward(self, x):
@@ -65,30 +60,25 @@ def get_model(name: str, dataset: str, num_classes: int = 10):
     if name == "simplecnn":
         input_channels = 1 if grayscale else 3
         input_size = 28 if grayscale else 32
-        return SimpleCNN(input_channels=input_channels, input_size=input_size, dropout_p=0.25, num_classes=num_classes)
+        return SimpleCNN(
+            input_channels=input_channels,
+            input_size=input_size,
+            dropout_p=0.25,
+            num_classes=num_classes,
+        )
 
     if name == "resnet50":
         model = resnet50(num_classes=num_classes)
         if grayscale:
-            model.conv1 = nn.Conv2d(1, 64, kernel_size=7, stride=2, padding=3, bias=False)
-        return model
-
-    if name == "resnet101":
-        model = resnet101(num_classes=num_classes)
-        if grayscale:
-            model.conv1 = nn.Conv2d(1, 64, kernel_size=7, stride=2, padding=3, bias=False)
-        return model
-
-    if name == "mobilenetv3":
-        model = mobilenet_v3_large(num_classes=num_classes)
-        if grayscale:
-            model.features[0][0] = nn.Conv2d(1, 16, kernel_size=3, stride=2, padding=1, bias=False)
+            model.conv1 = nn.Conv2d(
+                1, 64, kernel_size=7, stride=2, padding=3, bias=False)
         return model
 
     if name == "densenet121":
         model = densenet121(num_classes=num_classes)
         if grayscale:
-            model.features.conv0 = nn.Conv2d(1, 64, kernel_size=3, stride=1, padding=1, bias=False)
+            model.features.conv0 = nn.Conv2d(
+                1, 64, kernel_size=3, stride=1, padding=1, bias=False)
             model.features.pool0 = nn.Identity()
         return model
 
@@ -96,11 +86,3 @@ def get_model(name: str, dataset: str, num_classes: int = 10):
         return VisionTransformerWrapper(num_classes=num_classes, grayscale=grayscale)
 
     raise ValueError(f"Unknown model: {name}")
-
-
-def remove_dropout_layers(module: nn.Module):
-    for name, child in module.named_children():
-        if isinstance(child, nn.Dropout):
-            setattr(module, name, nn.Identity())
-        else:
-            remove_dropout_layers(child)

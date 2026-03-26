@@ -21,6 +21,17 @@ from triguard.plots import save_curve_plot
 from triguard.train import train_one_epoch
 
 
+WORKSHOP_2026_GRID = {
+    "mnist": ["simplecnn", "resnet50"],
+    "fashionmnist": ["simplecnn", "resnet50"],
+    "cifar10": ["resnet50", "densenet121", "vit_b_16"],
+    "cifar100": ["resnet50", "densenet121", "vit_b_16"],
+}
+
+DATASET_ORDER = ["mnist", "fashionmnist", "cifar10", "cifar100"]
+MODEL_ORDER = ["simplecnn", "resnet50", "densenet121", "vit_b_16"]
+
+
 def set_seed(seed: int):
     random.seed(seed)
     np.random.seed(seed)
@@ -73,7 +84,8 @@ def train_with_early_stopping(
         if loss < best - min_delta:
             best = loss
             bad = 0
-            best_state = {k: v.detach().cpu() for k, v in model.state_dict().items()}
+            best_state = {k: v.detach().cpu()
+                          for k, v in model.state_dict().items()}
         else:
             bad += 1
             if bad >= patience:
@@ -87,10 +99,31 @@ def train_with_early_stopping(
     return best
 
 
-def default_models(dataset: str | None):
-    if dataset and dataset.lower() == "cifar100":
-        return ["resnet50", "vit_b_16"]
-    return ["simplecnn", "resnet50", "resnet101", "mobilenetv3", "densenet121"]
+def get_experiment_grid(dataset: str | None, model: str | None):
+    if dataset and model:
+        return [(dataset.lower(), model.lower())]
+
+    if dataset:
+        ds = dataset.lower()
+        if ds not in WORKSHOP_2026_GRID:
+            raise ValueError(f"Unknown dataset: {ds}")
+        return [(ds, m) for m in WORKSHOP_2026_GRID[ds]]
+
+    if model:
+        m = model.lower()
+        pairs = []
+        for ds in DATASET_ORDER:
+            if m in WORKSHOP_2026_GRID[ds]:
+                pairs.append((ds, m))
+        if not pairs:
+            raise ValueError(f"Model {m} is not used in the workshop grid.")
+        return pairs
+
+    pairs = []
+    for ds in DATASET_ORDER:
+        for m in WORKSHOP_2026_GRID[ds]:
+            pairs.append((ds, m))
+    return pairs
 
 
 def run_one_setting(args, seed: int, ds: str, model_name: str, lam: float, device: torch.device, mode: str):
@@ -114,7 +147,11 @@ def run_one_setting(args, seed: int, ds: str, model_name: str, lam: float, devic
 
     ckpt_path = None
     if args.save_ckpt:
-        ckpt_path = os.path.join(args.out, "checkpoints", f"{mode}_{ds}_{model_name}_seed{seed}_lam{lam:.3f}.pt")
+        ckpt_path = os.path.join(
+            args.out,
+            "checkpoints",
+            f"{mode}_{ds}_{model_name}_seed{seed}_lam{lam:.3f}.pt",
+        )
 
     train_with_early_stopping(
         model,
@@ -123,7 +160,8 @@ def run_one_setting(args, seed: int, ds: str, model_name: str, lam: float, devic
         device,
         epochs=args.epochs,
         lambda_entropy=lam,
-        scaler=(torch.amp.GradScaler("cuda") if device.type == "cuda" else None),
+        scaler=(torch.amp.GradScaler("cuda")
+                if device.type == "cuda" else None),
         entropy_model=entropy_model,
         patience=args.patience,
         min_delta=args.min_delta,
@@ -165,7 +203,7 @@ def run_one_setting(args, seed: int, ds: str, model_name: str, lam: float, devic
             baseline_min=baseline_min,
             baseline_max=baseline_max,
         )
-        row = {
+        return {
             "dataset": ds,
             "model": model_name,
             "seed": seed,
@@ -174,7 +212,6 @@ def run_one_setting(args, seed: int, ds: str, model_name: str, lam: float, devic
             "adv_error": adv_error,
             **main_metrics,
         }
-        return row
 
     if mode == "baseline":
         appendix = evaluate_appendix_metrics(
@@ -215,9 +252,15 @@ def run_one_setting(args, seed: int, ds: str, model_name: str, lam: float, devic
             smoothgrad_noise=0.1,
             smoothgrad_samples=50,
         )
-        fig_dir = os.path.join(args.out, "figures", "faithfulness", ds, model_name, f"seed_{seed}")
+        fig_dir = os.path.join(args.out, "figures",
+                               "faithfulness", ds, model_name, f"seed_{seed}")
         for i, (tag, del_curve, ins_curve) in enumerate(res["curves"][:4]):
-            save_curve_plot(del_curve, ins_curve, f"{ds}/{model_name} {tag}", os.path.join(fig_dir, f"{tag}_curve_{i}.png"))
+            save_curve_plot(
+                del_curve,
+                ins_curve,
+                f"{ds}/{model_name} {tag}",
+                os.path.join(fig_dir, f"{tag}_curve_{i}.png"),
+            )
         return {
             "dataset": ds,
             "model": model_name,
@@ -247,8 +290,10 @@ def main():
     p.add_argument("--K_attr", type=int, default=100)
     p.add_argument("--K_faith", type=int, default=50)
     p.add_argument("--delins_steps", type=int, default=50)
-    p.add_argument("--target_mode", type=str, default="truth", choices=["truth", "pred"])
-    p.add_argument("--mode", type=str, default="main", choices=["main", "lambda", "baseline", "faithfulness"])
+    p.add_argument("--target_mode", type=str,
+                   default="truth", choices=["truth", "pred"])
+    p.add_argument("--mode", type=str, default="main",
+                   choices=["main", "lambda", "baseline", "faithfulness"])
     p.add_argument("--dataset", type=str, default=None)
     p.add_argument("--model", type=str, default=None)
     p.add_argument("--lambda_list", type=str, default="0.0,0.01,0.05,0.1")
@@ -281,56 +326,94 @@ def main():
         args.ig_steps = min(args.ig_steps, 25)
 
     seeds = parse_seeds(args.seed, args.seeds)
-    datasets = [args.dataset] if args.dataset else ["mnist", "fashionmnist", "cifar10"]
-    models = [args.model] if args.model else default_models(args.dataset)
+    experiment_pairs = get_experiment_grid(args.dataset, args.model)
 
     if args.mode == "main":
         out_csv = os.path.join(args.out, "table1_main.csv")
-        header = ["dataset", "model", "seed", "lambda_entropy", "clean_acc", "adv_error", "bound_check_rate", "crown_rate", "entropy_mean", "ads_mean"]
+        header = [
+            "dataset",
+            "model",
+            "seed",
+            "lambda_entropy",
+            "clean_acc",
+            "adv_error",
+            "bound_check_rate",
+            "crown_rate",
+            "entropy_mean",
+            "ads_mean",
+        ]
         for seed in seeds:
-            for ds in datasets:
-                active_models = [args.model] if args.model else default_models(ds)
-                for model_name in active_models:
-                    row = run_one_setting(args, seed, ds, model_name, args.lambda_entropy, device, mode="main")
-                    append_csv(out_csv, row, header)
-                    print("Wrote row:", row)
+            for ds, model_name in experiment_pairs:
+                row = run_one_setting(
+                    args, seed, ds, model_name, args.lambda_entropy, device, mode="main")
+                append_csv(out_csv, row, header)
+                print("Wrote row:", row)
 
     elif args.mode == "lambda":
         out_csv = os.path.join(args.out, "table4_lambda_ablation.csv")
-        header = ["dataset", "model", "seed", "lambda_entropy", "clean_acc", "adv_error", "bound_check_rate", "crown_rate", "entropy_mean", "ads_mean"]
-        lam_list = [float(x.strip()) for x in args.lambda_list.split(",") if x.strip()]
-        active_datasets = [args.dataset or "mnist"]
-        active_models = [args.model or "simplecnn"]
+        header = [
+            "dataset",
+            "model",
+            "seed",
+            "lambda_entropy",
+            "clean_acc",
+            "adv_error",
+            "bound_check_rate",
+            "crown_rate",
+            "entropy_mean",
+            "ads_mean",
+        ]
+        lam_list = [float(x.strip())
+                    for x in args.lambda_list.split(",") if x.strip()]
+        active_dataset = args.dataset or "mnist"
+        active_model = args.model or "simplecnn"
         for seed in seeds:
             for lam in lam_list:
-                for ds in active_datasets:
-                    for model_name in active_models:
-                        row = run_one_setting(args, seed, ds, model_name, lam, device, mode="lambda")
-                        append_csv(out_csv, row, header)
-                        print("Wrote row:", row)
+                row = run_one_setting(
+                    args, seed, active_dataset, active_model, lam, device, mode="lambda")
+                append_csv(out_csv, row, header)
+                print("Wrote row:", row)
 
     elif args.mode == "baseline":
         out_csv = os.path.join(args.out, "table2_baseline_sensitivity.csv")
-        header = ["dataset", "model", "seed", "K", "ads_zero_blur", "ads_zero_noise", "ads_zero_uniform", "ads_blur_noise", "ads_blur_uniform", "ads_noise_uniform"]
-        active_datasets = [args.dataset or "mnist"]
-        active_models = [args.model or "simplecnn"]
+        header = [
+            "dataset",
+            "model",
+            "seed",
+            "K",
+            "ads_zero_blur",
+            "ads_zero_noise",
+            "ads_zero_uniform",
+            "ads_blur_noise",
+            "ads_blur_uniform",
+            "ads_noise_uniform",
+        ]
+        active_dataset = args.dataset or "mnist"
+        active_model = args.model or "simplecnn"
         for seed in seeds:
-            for ds in active_datasets:
-                for model_name in active_models:
-                    row = run_one_setting(args, seed, ds, model_name, args.lambda_entropy, device, mode="baseline")
-                    append_csv(out_csv, row, header)
-                    print("Wrote row:", row)
+            row = run_one_setting(args, seed, active_dataset, active_model,
+                                  args.lambda_entropy, device, mode="baseline")
+            append_csv(out_csv, row, header)
+            print("Wrote row:", row)
 
     elif args.mode == "faithfulness":
         out_csv = os.path.join(args.out, "tables5_6_faithfulness.csv")
-        header = ["dataset", "model", "seed", "K", "ig_del_auc_mean", "ig_ins_auc_mean", "sg2_del_auc_mean", "sg2_ins_auc_mean"]
+        header = [
+            "dataset",
+            "model",
+            "seed",
+            "K",
+            "ig_del_auc_mean",
+            "ig_ins_auc_mean",
+            "sg2_del_auc_mean",
+            "sg2_ins_auc_mean",
+        ]
         for seed in seeds:
-            for ds in datasets:
-                active_models = [args.model] if args.model else default_models(ds)
-                for model_name in active_models:
-                    row = run_one_setting(args, seed, ds, model_name, args.lambda_entropy, device, mode="faithfulness")
-                    append_csv(out_csv, row, header)
-                    print("Wrote row:", row)
+            for ds, model_name in experiment_pairs:
+                row = run_one_setting(
+                    args, seed, ds, model_name, args.lambda_entropy, device, mode="faithfulness")
+                append_csv(out_csv, row, header)
+                print("Wrote row:", row)
 
 
 if __name__ == "__main__":
