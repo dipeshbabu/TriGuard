@@ -19,19 +19,14 @@ Appendix only workflows also support:
 - faithfulness via deletion and insertion AUC
 - SmoothGrad squared comparison
 
-## Supported datasets
+## Supported datasets and models
 
-- MNIST
-- FashionMNIST
-- CIFAR10
-- CIFAR100
-
-## Supported models
-
-- SimpleCNN
-- ResNet50
-- DenseNet121
-- ViT B 16
+| Dataset      | Models                          |
+|--------------|---------------------------------|
+| MNIST        | SimpleCNN, ResNet50             |
+| FashionMNIST | SimpleCNN, ResNet50             |
+| CIFAR10      | ResNet50, DenseNet121, ViT B 16 |
+| CIFAR100     | ResNet50, DenseNet121, ViT B 16 |
 
 ## Suggested workflow
 
@@ -39,7 +34,7 @@ Run the main benchmark with multiple seeds:
 
 ```bash
 bash scripts/01_run_main_table.sh
-```
+````
 
 Run the lambda ablation:
 
