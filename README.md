@@ -11,7 +11,7 @@ python3.10 -m venv .triguard
 source .triguard/bin/activate
 ```
 
-After creating virtual environment install the required dependencies then follow instructions given in `Suggested workflow` section.
+After creating virtual environment, install the required dependencies then follow the instructions given in `Suggested workflow` section.
 
 ```
 bash scripts/00_install.sh
