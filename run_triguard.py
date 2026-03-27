@@ -32,8 +32,8 @@ MODEL_ORDER = ["simplecnn", "resnet50", "densenet121", "vit_b_16"]
 DEFAULT_EPOCHS = {
     "mnist": 5,
     "fashionmnist": 5,
-    "cifar10": 15,
-    "cifar100": 20,
+    "cifar10": 10,
+    "cifar100": 15,
 }
 
 
