@@ -1,4 +1,4 @@
-# TriGuard: Multi Axis Evaluation of Robustness and Explanation Stability
+# TriGuard: A Multi-Axis Benchmark for Robustness and Attribution Stability
 
 TriGuard is a practical evaluation toolkit for studying when prediction robustness, certification aware checks, and explanation stability disagree in image classifiers.
 
