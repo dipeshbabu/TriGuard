@@ -36,12 +36,21 @@ Appendix only workflows also support:
 
 ## Supported datasets and models
 
+The workshop grid is kept for reproducibility.
+
 | Dataset      | Models                          |
 |--------------|---------------------------------|
 | MNIST        | SimpleCNN, ResNet50             |
 | FashionMNIST | SimpleCNN, ResNet50             |
 | CIFAR10      | ResNet50, DenseNet121, ViT B 16 |
 | CIFAR100     | ResNet50, DenseNet121, ViT B 16 |
+
+The upgraded grid adds ImageNet initialized models for the CIFAR settings:
+
+| Dataset  | Models |
+|----------|--------|
+| CIFAR10  | ResNet50-ImageNet, DenseNet121-ImageNet, ViT-B/16-ImageNet, ConvNeXt-Tiny-ImageNet, Swin-T-ImageNet |
+| CIFAR100 | ResNet50-ImageNet, DenseNet121-ImageNet, ViT-B/16-ImageNet, ConvNeXt-Tiny-ImageNet, Swin-T-ImageNet |
 
 ## Suggested workflow
 
@@ -77,10 +86,40 @@ Generate LaTeX tables:
 bash scripts/05_make_tables.sh
 ```
 
+## Upgraded paper workflow
+
+For a stronger paper, run the pretrained grid with five seeds:
+
+```bash
+bash scripts/06_run_pretrained_grid.sh
+```
+
+Run a separate certification sweep on a CROWN-friendly MNIST/SimpleCNN setting with smaller pixel-space radii:
+
+```bash
+bash scripts/07_run_certification_sweep.sh
+```
+
+Generate statistical summaries, Mann-Whitney tests, metric correlations, radar plots, and updated LaTeX tables:
+
+```bash
+bash scripts/08_run_stats_and_figures.sh
+```
+
+To generate a saliency panel for a trained checkpoint:
+
+```bash
+python -m triguard.make_figures \
+  --mode saliency \
+  --dataset cifar10 \
+  --model vit_b_16_imagenet \
+  --checkpoint outputs/icml2026/checkpoints/main_cifar10_vit_b_16_imagenet_seed0_lam0.000.pt
+```
+
 ## Acknowledgement
 
 This project uses the external [`auto_LiRPA`](https://github.com/Verified-Intelligence/auto_LiRPA) library for certification-aware verification components. A copy of that library is included in this repository under `auto_LiRPA/`.
 
 ## Notes on framing
 
-This codebase is aligned with the workshop version of the paper, where TriGuard is presented as a multi axis diagnostic framework rather than a complete safety certificate. The main paper path focuses on robustness and explanation stability. Appendix workflows remain available for baseline sensitivity and faithfulness checks.
+TriGuard is a diagnostic benchmark, not a safety certificate. The upgraded workflow is designed to address the main reviewer risks: weak ViT training, all-zero certification output, missing statistical tests, and the need to check whether ADS is being measured on informative attribution maps.

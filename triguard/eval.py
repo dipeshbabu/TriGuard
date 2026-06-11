@@ -86,6 +86,7 @@ def evaluate_main_metrics(
     target_mode="truth",
     bound_probe_samples=16,
     do_crown=True,
+    cert_eps=None,
     baseline_min=0.0,
     baseline_max=1.0,
 ):
@@ -117,7 +118,11 @@ def evaluate_main_metrics(
 
         bound_ok = empirical_probe(model, x.squeeze(0), bound_probe_samples, eps, clamp_min, clamp_max, device)
         bound_list.append(int(bound_ok))
-        crown_list.append(int(crown_ibp_certify(model, x.squeeze(0), y, eps, device)) if do_crown else 0)
+        active_cert_eps = eps if cert_eps is None else cert_eps
+        if do_crown:
+            crown_list.append(
+                int(crown_ibp_certify(model, x.squeeze(0), y, active_cert_eps, device))
+            )
 
     _report_skipped("entropy_mean", len(ent_list), len(idxs))
     _report_skipped("ads_mean", len(ads_list), len(idxs))
@@ -128,6 +133,31 @@ def evaluate_main_metrics(
         "ads_valid_n": int(len(ads_list)),
         "bound_check_rate": _safe_mean(bound_list),
         "crown_rate": _safe_mean(crown_list),
+    }
+
+
+def evaluate_certification(
+    model,
+    test_set,
+    device,
+    cert_eps,
+    k=100,
+    seed=0,
+):
+    rng = np.random.default_rng(seed)
+    idxs = rng.choice(len(test_set), size=min(k, len(test_set)), replace=False)
+    crown_list = []
+
+    for idx in idxs:
+        x, y = test_set[idx]
+        y = int(y)
+        x = x.to(device).unsqueeze(0)
+        crown_list.append(int(crown_ibp_certify(model, x.squeeze(0), y, cert_eps, device)))
+
+    return {
+        "cert_eps": float(cert_eps),
+        "crown_rate": _safe_mean(crown_list),
+        "cert_valid_n": int(len(crown_list)),
     }
 
 

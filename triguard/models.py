@@ -1,7 +1,33 @@
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from torchvision.models import densenet121, resnet50, vit_b_16
+from torchvision.models import (
+    ConvNeXt_Tiny_Weights,
+    DenseNet121_Weights,
+    ResNet50_Weights,
+    Swin_T_Weights,
+    ViT_B_16_Weights,
+    convnext_tiny,
+    densenet121,
+    resnet50,
+    swin_t,
+    vit_b_16,
+)
+
+
+IMAGENET_MODEL_SUFFIX = "_imagenet"
+
+
+def split_model_name(name: str) -> tuple[str, bool]:
+    name = name.lower()
+    if name.endswith(IMAGENET_MODEL_SUFFIX):
+        return name[: -len(IMAGENET_MODEL_SUFFIX)], True
+    return name, False
+
+
+def uses_imagenet_preprocessing(name: str) -> bool:
+    _, pretrained = split_model_name(name)
+    return pretrained
 
 
 class SimpleCNN(nn.Module):
@@ -39,12 +65,14 @@ class GrayscaleToRGB(nn.Module):
 
 
 class VisionTransformerWrapper(nn.Module):
-    def __init__(self, num_classes: int, grayscale: bool = False):
+    def __init__(self, num_classes: int, grayscale: bool = False, weights=None):
         super().__init__()
         self.to_rgb = GrayscaleToRGB() if grayscale else nn.Identity()
         self.resize = nn.Upsample(
             size=(224, 224), mode="bilinear", align_corners=False)
-        self.backbone = vit_b_16(num_classes=num_classes)
+        self.backbone = vit_b_16(weights=weights)
+        in_features = self.backbone.heads.head.in_features
+        self.backbone.heads.head = nn.Linear(in_features, num_classes)
 
     def forward(self, x):
         x = self.to_rgb(x)
@@ -53,9 +81,12 @@ class VisionTransformerWrapper(nn.Module):
 
 
 def get_model(name: str, dataset: str, num_classes: int = 10):
-    name = name.lower()
+    name, pretrained = split_model_name(name)
     dataset = dataset.lower()
     grayscale = dataset in ["mnist", "fashionmnist"]
+
+    if pretrained and name == "simplecnn":
+        raise ValueError("SimpleCNN does not have an ImageNet-pretrained variant.")
 
     if name == "simplecnn":
         input_channels = 1 if grayscale else 3
@@ -68,21 +99,42 @@ def get_model(name: str, dataset: str, num_classes: int = 10):
         )
 
     if name == "resnet50":
-        model = resnet50(num_classes=num_classes)
-        if grayscale:
+        weights = ResNet50_Weights.IMAGENET1K_V2 if pretrained else None
+        model = resnet50(weights=weights)
+        model.fc = nn.Linear(model.fc.in_features, num_classes)
+        if grayscale and not pretrained:
             model.conv1 = nn.Conv2d(
                 1, 64, kernel_size=7, stride=2, padding=3, bias=False)
         return model
 
     if name == "densenet121":
-        model = densenet121(num_classes=num_classes)
-        if grayscale:
+        weights = DenseNet121_Weights.IMAGENET1K_V1 if pretrained else None
+        model = densenet121(weights=weights)
+        model.classifier = nn.Linear(model.classifier.in_features, num_classes)
+        if grayscale and not pretrained:
             model.features.conv0 = nn.Conv2d(
                 1, 64, kernel_size=3, stride=1, padding=1, bias=False)
             model.features.pool0 = nn.Identity()
         return model
 
     if name in ["vit_b_16", "vit"]:
-        return VisionTransformerWrapper(num_classes=num_classes, grayscale=grayscale)
+        weights = ViT_B_16_Weights.IMAGENET1K_V1 if pretrained else None
+        return VisionTransformerWrapper(
+            num_classes=num_classes,
+            grayscale=(grayscale and not pretrained),
+            weights=weights,
+        )
+
+    if name == "convnext_tiny":
+        weights = ConvNeXt_Tiny_Weights.IMAGENET1K_V1 if pretrained else None
+        model = convnext_tiny(weights=weights)
+        model.classifier[2] = nn.Linear(model.classifier[2].in_features, num_classes)
+        return model
+
+    if name == "swin_t":
+        weights = Swin_T_Weights.IMAGENET1K_V1 if pretrained else None
+        model = swin_t(weights=weights)
+        model.head = nn.Linear(model.head.in_features, num_classes)
+        return model
 
     raise ValueError(f"Unknown model: {name}")

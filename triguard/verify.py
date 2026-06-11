@@ -1,6 +1,20 @@
 import numpy as np
 import torch
+import torch.nn as nn
 from auto_LiRPA import BoundedModule, BoundedTensor, PerturbationLpNorm
+
+
+class MarginModel(nn.Module):
+    def __init__(self, model: nn.Module, y: int):
+        super().__init__()
+        self.model = model
+        self.y = int(y)
+
+    def forward(self, x):
+        logits = self.model(x)
+        correct = logits[:, self.y:self.y + 1]
+        others = torch.cat([logits[:, :self.y], logits[:, self.y + 1:]], dim=1)
+        return correct - others
 
 
 def crown_ibp_certify(model, x, y, eps, device):
@@ -10,14 +24,13 @@ def crown_ibp_certify(model, x, y, eps, device):
     x = x.to(device)
 
     try:
+        y = int(y)
+        margin_model = MarginModel(model, y).to(device).eval()
         ptb = PerturbationLpNorm(norm=np.inf, eps=eps)
         bx = BoundedTensor(x, ptb)
-        lirpa = BoundedModule(model, x, device=device, verbose=False)
+        lirpa = BoundedModule(margin_model, x, device=device, verbose=False)
         lb, _ = lirpa.compute_bounds(x=(bx,), method="CROWN-IBP")
-        y = int(y)
-        correct_lb = lb[0, y]
-        others = torch.cat([lb[0, :y], lb[0, y + 1:]])
-        return bool((correct_lb > others.max()).item())
+        return bool((lb[0] > 0).all().item())
     except Exception:
         return False
 

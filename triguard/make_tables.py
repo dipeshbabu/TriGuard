@@ -5,7 +5,17 @@ import pandas as pd
 
 
 DATASET_ORDER = ["mnist", "fashionmnist", "cifar10", "cifar100"]
-MODEL_ORDER = ["simplecnn", "resnet50", "densenet121", "vit_b_16"]
+MODEL_ORDER = [
+    "simplecnn",
+    "resnet50",
+    "densenet121",
+    "vit_b_16",
+    "resnet50_imagenet",
+    "densenet121_imagenet",
+    "vit_b_16_imagenet",
+    "convnext_tiny_imagenet",
+    "swin_t_imagenet",
+]
 
 
 def fmt_mean_std(mean_series, std_series, pct: bool = False):
@@ -58,13 +68,17 @@ def main():
     seed_csv = os.path.join(args.out, "table_seed_variance.csv")
     base_csv = os.path.join(args.out, "table2_baseline_sensitivity.csv")
     faith_csv = os.path.join(args.out, "tables5_6_faithfulness.csv")
+    cert_csv = os.path.join(args.out, "table_certification_sweep.csv")
     tex_path = os.path.join(args.out, "paper_tables.tex")
 
     pieces: list[str] = []
 
     if os.path.exists(main_csv):
         df = pd.read_csv(main_csv)
-        grp = df.groupby(["dataset", "model", "lambda_entropy"], as_index=False).agg(
+        group_cols = ["dataset", "model", "lambda_entropy"]
+        if "input_profile" in df.columns:
+            group_cols.append("input_profile")
+        grp = df.groupby(group_cols, as_index=False).agg(
             {
                 "clean_acc": ["mean", "std"],
                 "adv_error": ["mean", "std"],
@@ -76,24 +90,23 @@ def main():
         )
         grp.columns = ["_".join(c).strip("_")
                        for c in grp.columns.to_flat_index()]
-        out = pd.DataFrame(
-            {
-                "dataset": grp["dataset"],
-                "model": grp["model"],
-                "$\\lambda$": grp["lambda_entropy"],
-                "Clean Acc": fmt_mean_std(grp["clean_acc_mean"], grp["clean_acc_std"], pct=True),
-                "PGD Err": fmt_mean_std(grp["adv_error_mean"], grp["adv_error_std"], pct=True),
-                "Bound Check": fmt_mean_std(grp["bound_check_rate_mean"], grp["bound_check_rate_std"]),
-                "CROWN": fmt_mean_std(grp["crown_rate_mean"], grp["crown_rate_std"]),
-                "Entropy": fmt_mean_std(grp["entropy_mean_mean"], grp["entropy_mean_std"]),
-                "ADS": fmt_mean_std(grp["ads_mean_mean"], grp["ads_mean_std"]),
-            }
-        )
+        table_data = {
+            "dataset": grp["dataset"],
+            "model": grp["model"],
+            "Clean Acc": fmt_mean_std(grp["clean_acc_mean"], grp["clean_acc_std"], pct=True),
+            "PGD Err": fmt_mean_std(grp["adv_error_mean"], grp["adv_error_std"], pct=True),
+            "Bound Check": fmt_mean_std(grp["bound_check_rate_mean"], grp["bound_check_rate_std"]),
+            "Entropy": fmt_mean_std(grp["entropy_mean_mean"], grp["entropy_mean_std"]),
+            "ADS": fmt_mean_std(grp["ads_mean_mean"], grp["ads_mean_std"]),
+        }
+        if not grp["crown_rate_mean"].isna().all():
+            table_data["CROWN"] = fmt_mean_std(grp["crown_rate_mean"], grp["crown_rate_std"])
+        out = pd.DataFrame(table_data)
         out = sort_df(out)
         pieces.append(
             latex_table(
                 out,
-                "Main workshop results with mean and standard deviation across seeds. We report clean accuracy, PGD error, bound check rate, CROWN rate, attribution entropy, and Attribution Drift Score.",
+                "Main results with mean and standard deviation across seeds. We report clean accuracy, PGD error, bound check rate, attribution entropy, and Attribution Drift Score. Certification results are reported separately when the CROWN sweep is run.",
                 "tab:main_results",
             )
         )
@@ -195,6 +208,31 @@ def main():
                 out,
                 "Appendix faithfulness comparison for Integrated Gradients and SmoothGrad squared.",
                 "tab:faithfulness_auc",
+            )
+        )
+
+    if os.path.exists(cert_csv):
+        df = pd.read_csv(cert_csv)
+        grp = df.groupby(["dataset", "model", "cert_pixel_eps"], as_index=False).agg(
+            {"crown_rate": ["mean", "std"], "cert_valid_n": "mean"}
+        )
+        grp.columns = ["_".join(c).strip("_")
+                       for c in grp.columns.to_flat_index()]
+        out = pd.DataFrame(
+            {
+                "dataset": grp["dataset"],
+                "model": grp["model"],
+                "$\\epsilon_{cert}$": grp["cert_pixel_eps"].map(lambda x: f"{x:.4f}"),
+                "CROWN rate": fmt_mean_std(grp["crown_rate_mean"], grp["crown_rate_std"]),
+                "K": grp["cert_valid_n_mean"].map(lambda x: f"{int(round(x))}"),
+            }
+        )
+        out = sort_df(out)
+        pieces.append(
+            latex_table(
+                out,
+                "Certification sweep across smaller pixel-space perturbation radii. This table separates certification radius from the PGD attack radius.",
+                "tab:certification_sweep",
             )
         )
 
