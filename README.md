@@ -120,6 +120,3 @@ python -m triguard.make_figures \
 
 This project uses the external [`auto_LiRPA`](https://github.com/Verified-Intelligence/auto_LiRPA) library for certification-aware verification components. A copy of that library is included in this repository under `auto_LiRPA/`.
 
-## Notes on framing
-
-TriGuard is a diagnostic benchmark, not a safety certificate. The upgraded workflow is designed to address the main reviewer risks: weak ViT training, all-zero certification output, missing statistical tests, and the need to check whether ADS is being measured on informative attribution maps.
