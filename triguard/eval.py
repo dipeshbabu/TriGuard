@@ -3,6 +3,7 @@ import os
 
 import numpy as np
 import torch
+import torch.nn.functional as F
 
 from .attacks import pgd_linf
 from .attributions import (
@@ -48,7 +49,7 @@ def _baseline_family(x, modes: str, baseline_min: float, baseline_max: float):
         elif mode == "blur":
             family[mode] = blurred_baseline(x)
         elif mode == "noise":
-            family[mode] = noise_baseline(x)
+            family[mode] = noise_baseline(x, low=baseline_min, high=baseline_max)
         elif mode == "uniform":
             family[mode] = uniform_baseline(x, low=baseline_min, high=baseline_max)
         elif mode == "mean":
@@ -75,6 +76,90 @@ def _worst_ads_baseline(model, x, target, modes, baseline_min, baseline_max, ste
                 value = float(dist.item())
                 best = value if best is None else max(best, value)
     return best
+
+
+def _attribution_similarity(clean_attr, pert_attr, topk: int):
+    clean = clean_attr.detach().flatten()
+    pert = pert_attr.detach().flatten()
+    if clean.numel() == 0 or pert.numel() == 0:
+        return None
+    l2 = torch.norm(clean - pert, p=2)
+    cosine = F.cosine_similarity(clean.view(1, -1), pert.view(1, -1), dim=1)[0]
+    k = min(max(int(topk), 1), clean.numel())
+    clean_idx = torch.topk(clean.abs(), k=k).indices
+    pert_idx = torch.topk(pert.abs(), k=k).indices
+    clean_set = set(clean_idx.detach().cpu().tolist())
+    pert_set = set(pert_idx.detach().cpu().tolist())
+    union = clean_set | pert_set
+    jaccard = len(clean_set & pert_set) / max(len(union), 1)
+    if not torch.isfinite(l2) or not torch.isfinite(cosine):
+        return None
+    return float(l2.item()), float(cosine.item()), float(jaccard)
+
+
+def _stability_perturbations(x, modes: str, clamp_min: float, clamp_max: float, noise_std: float):
+    perturbed = []
+    for mode in [m.strip().lower() for m in modes.split(",") if m.strip()]:
+        if mode == "noise":
+            x_p = x + noise_std * torch.randn_like(x)
+        elif mode == "brightness":
+            x_p = x + noise_std
+        elif mode == "contrast":
+            mean = x.mean(dim=(-2, -1), keepdim=True)
+            x_p = (x - mean) * (1.0 + noise_std) + mean
+        elif mode == "blur":
+            x_p = blurred_baseline(x)
+        elif mode == "shift":
+            x_p = torch.roll(x, shifts=(1, 1), dims=(-2, -1))
+        else:
+            raise ValueError(f"Unknown stability perturbation mode: {mode}")
+        perturbed.append((mode, x_p.clamp(clamp_min, clamp_max).detach()))
+    return perturbed
+
+
+def _prediction_preserving_stability(
+    model,
+    x,
+    target,
+    baseline,
+    clamp_min,
+    clamp_max,
+    ig_steps,
+    modes,
+    topk,
+    noise_std,
+):
+    with torch.no_grad():
+        clean_pred = int(model(x).argmax(dim=1).item())
+    clean_attr = integrated_gradients(model, x, target, baseline, steps=ig_steps)
+    total = 0
+    kept = 0
+    l2_values = []
+    cosine_values = []
+    jaccard_values = []
+    for _, x_pert in _stability_perturbations(x, modes, clamp_min, clamp_max, noise_std):
+        total += 1
+        with torch.no_grad():
+            pert_pred = int(model(x_pert).argmax(dim=1).item())
+        if pert_pred != clean_pred:
+            continue
+        kept += 1
+        pert_attr = integrated_gradients(model, x_pert, target, baseline, steps=ig_steps)
+        scores = _attribution_similarity(clean_attr, pert_attr, topk=topk)
+        if scores is None:
+            continue
+        l2, cosine, jaccard = scores
+        l2_values.append(l2)
+        cosine_values.append(cosine)
+        jaccard_values.append(jaccard)
+    return {
+        "l2": _safe_mean(l2_values),
+        "cosine": _safe_mean(cosine_values),
+        "topk_jaccard": _safe_mean(jaccard_values),
+        "kept": kept,
+        "total": total,
+        "valid": len(l2_values),
+    }
 
 
 @torch.no_grad()
@@ -127,6 +212,9 @@ def evaluate_main_metrics(
     baseline_min=0.0,
     baseline_max=1.0,
     baseline_modes="zero,blur,noise,uniform,mean",
+    stability_modes="noise,brightness,contrast,blur,shift",
+    stability_topk=50,
+    stability_noise_std=0.03,
 ):
     rng = np.random.default_rng(seed)
     idxs = rng.choice(len(test_set), size=min(k, len(test_set)), replace=False)
@@ -134,6 +222,12 @@ def evaluate_main_metrics(
     ent_list = []
     ads_list = []
     wads_list = []
+    pp_l2_list = []
+    pp_cosine_list = []
+    pp_jaccard_list = []
+    pp_kept = 0
+    pp_total = 0
+    pp_valid = 0
     bound_list = []
     crown_list = []
 
@@ -166,6 +260,24 @@ def evaluate_main_metrics(
                 steps=ig_steps,
             ),
         )
+        pp = _prediction_preserving_stability(
+            model,
+            x,
+            target,
+            b0,
+            clamp_min=clamp_min,
+            clamp_max=clamp_max,
+            ig_steps=ig_steps,
+            modes=stability_modes,
+            topk=stability_topk,
+            noise_std=stability_noise_std,
+        )
+        _append_finite(pp_l2_list, pp["l2"])
+        _append_finite(pp_cosine_list, pp["cosine"])
+        _append_finite(pp_jaccard_list, pp["topk_jaccard"])
+        pp_kept += int(pp["kept"])
+        pp_total += int(pp["total"])
+        pp_valid += int(pp["valid"])
 
         bound_ok = empirical_probe(model, x.squeeze(0), bound_probe_samples, eps, clamp_min, clamp_max, device)
         bound_list.append(int(bound_ok))
@@ -178,13 +290,19 @@ def evaluate_main_metrics(
     _report_skipped("entropy_mean", len(ent_list), len(idxs))
     _report_skipped("ads_mean", len(ads_list), len(idxs))
     _report_skipped("wads_mean", len(wads_list), len(idxs))
+    _report_skipped("pp_stability_l2_mean", len(pp_l2_list), len(idxs))
     return {
         "entropy_mean": _safe_mean(ent_list),
         "ads_mean": _safe_mean(ads_list),
         "wads_mean": _safe_mean(wads_list),
+        "pp_stability_l2_mean": _safe_mean(pp_l2_list),
+        "pp_stability_cosine_mean": _safe_mean(pp_cosine_list),
+        "pp_stability_topk_jaccard_mean": _safe_mean(pp_jaccard_list),
+        "pp_stability_keep_rate": float(pp_kept / max(pp_total, 1)),
         "entropy_valid_n": int(len(ent_list)),
         "ads_valid_n": int(len(ads_list)),
         "wads_valid_n": int(len(wads_list)),
+        "pp_stability_valid_n": int(pp_valid),
         "bound_check_rate": _safe_mean(bound_list),
         "crown_rate": _safe_mean(crown_list),
     }
@@ -250,7 +368,7 @@ def evaluate_appendix_metrics(
 
         b0 = torch.zeros_like(x)
         b_blur = blurred_baseline(x)
-        b_noise = noise_baseline(x)
+        b_noise = noise_baseline(x, low=baseline_min, high=baseline_max)
         b_uniform = uniform_baseline(x, low=baseline_min, high=baseline_max)
 
         y_tensor = torch.tensor([y], device=device, dtype=torch.long)
@@ -340,6 +458,16 @@ def evaluate_faithfulness(model, test_set, device, k=50, ig_steps=50, delins_ste
 def append_csv(path, row, header):
     os.makedirs(os.path.dirname(path), exist_ok=True)
     exists = os.path.exists(path)
+    if exists:
+        with open(path, newline="") as f:
+            reader = csv.reader(f)
+            existing_header = next(reader, [])
+        if existing_header != list(header):
+            raise ValueError(
+                "CSV schema mismatch for "
+                f"{path}. Existing columns do not match this run. "
+                "Use a new --out directory or remove the old CSV file."
+            )
     with open(path, "a", newline="") as f:
         w = csv.DictWriter(f, fieldnames=header)
         if not exists:

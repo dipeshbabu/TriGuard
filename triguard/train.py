@@ -58,7 +58,7 @@ def make_baseline_family(
         elif mode == "blur":
             family[mode] = _smooth_baseline(x)
         elif mode == "noise":
-            family[mode] = torch.randn_like(x) * 0.1
+            family[mode] = (torch.randn_like(x) * 0.1).clamp(baseline_min, baseline_max)
         elif mode == "uniform":
             family[mode] = torch.empty_like(x).uniform_(baseline_min, baseline_max)
         elif mode == "mean":
@@ -114,6 +114,108 @@ def worst_baseline_drift_term(
     return torch.stack(pair_losses).max()
 
 
+def _fixed_baseline(
+    x: torch.Tensor,
+    mode: str,
+    baseline_min: float,
+    baseline_max: float,
+) -> torch.Tensor:
+    mode = mode.strip().lower()
+    if mode == "zero":
+        return torch.zeros_like(x)
+    if mode == "blur":
+        return _smooth_baseline(x)
+    if mode == "noise":
+        return (torch.randn_like(x) * 0.1).clamp(baseline_min, baseline_max)
+    if mode == "uniform":
+        return torch.empty_like(x).uniform_(baseline_min, baseline_max)
+    if mode == "mean":
+        return torch.full_like(x, (baseline_min + baseline_max) / 2.0)
+    raise ValueError(f"Unknown baseline mode: {mode}")
+
+
+def _one_step_linf_perturb(
+    model,
+    x: torch.Tensor,
+    y: torch.Tensor,
+    eps: float,
+    alpha: float,
+    clamp_min: float | None = None,
+    clamp_max: float | None = None,
+) -> torch.Tensor:
+    x_adv = x.detach().clone().requires_grad_(True)
+    ce = F.cross_entropy(model(x_adv), y)
+    grad = torch.autograd.grad(ce, x_adv, retain_graph=False, create_graph=False)[0]
+    active_min = x.min().item() if clamp_min is None else clamp_min
+    active_max = x.max().item() if clamp_max is None else clamp_max
+    x_adv = (x_adv.detach() + alpha * grad.sign()).clamp(active_min, active_max)
+    delta = torch.clamp(x_adv - x.detach(), min=-eps, max=eps)
+    return (x.detach() + delta).clamp(active_min, active_max).detach()
+
+
+def rar_attribution_term(
+    model,
+    x: torch.Tensor,
+    y: torch.Tensor,
+    baseline_mode: str,
+    baseline_min: float,
+    baseline_max: float,
+    ig_steps: int = 8,
+    eps: float = 0.01,
+    alpha: float = 0.01,
+    clamp_min: float | None = None,
+    clamp_max: float | None = None,
+) -> torch.Tensor:
+    baseline = _fixed_baseline(x, baseline_mode, baseline_min, baseline_max)
+    x_adv = _one_step_linf_perturb(
+        model,
+        x,
+        y,
+        eps=eps,
+        alpha=alpha,
+        clamp_min=clamp_min,
+        clamp_max=clamp_max,
+    )
+    clean_attr = differentiable_integrated_gradients(
+        model, x, y, baseline, steps=ig_steps
+    )
+    adv_attr = differentiable_integrated_gradients(
+        model, x_adv, y, baseline.detach(), steps=ig_steps
+    )
+    return _rms_flat(clean_attr - adv_attr).mean()
+
+
+def far_attribution_term(
+    model,
+    x: torch.Tensor,
+    y: torch.Tensor,
+    baseline_mode: str,
+    baseline_min: float,
+    baseline_max: float,
+    ig_steps: int = 8,
+    eps: float = 0.01,
+    samples: int = 2,
+    clamp_min: float | None = None,
+    clamp_max: float | None = None,
+) -> torch.Tensor:
+    samples = max(int(samples), 1)
+    active_min = x.min().item() if clamp_min is None else clamp_min
+    active_max = x.max().item() if clamp_max is None else clamp_max
+    baseline = _fixed_baseline(x, baseline_mode, baseline_min, baseline_max)
+    clean_attr = differentiable_integrated_gradients(
+        model, x, y, baseline, steps=ig_steps
+    )
+    losses = []
+    for _ in range(samples):
+        delta = torch.empty_like(x).uniform_(-eps, eps)
+        x_pert = (x.detach() + delta).clamp(active_min, active_max)
+        pert_attr = differentiable_integrated_gradients(
+            model, x_pert, y, baseline.detach(), steps=ig_steps
+        )
+        losses.append(_rms_flat(clean_attr - pert_attr).mean())
+    return torch.stack(losses).max()
+
+
 def curvature_reg_term(
     model,
     x: torch.Tensor,
@@ -139,14 +241,15 @@ def robust_consistency_term(
     clamp_min: float | None = None,
     clamp_max: float | None = None,
 ):
-    x_adv = x.detach().clone().requires_grad_(True)
-    ce = F.cross_entropy(model(x_adv), y)
-    grad = torch.autograd.grad(ce, x_adv, retain_graph=False, create_graph=False)[0]
-    active_min = x.min().item() if clamp_min is None else clamp_min
-    active_max = x.max().item() if clamp_max is None else clamp_max
-    x_adv = (x_adv.detach() + alpha * grad.sign()).clamp(active_min, active_max)
-    delta = torch.clamp(x_adv - x.detach(), min=-eps, max=eps)
-    x_adv = (x.detach() + delta).clamp(active_min, active_max).detach()
+    x_adv = _one_step_linf_perturb(
+        model,
+        x,
+        y,
+        eps=eps,
+        alpha=alpha,
+        clamp_min=clamp_min,
+        clamp_max=clamp_max,
+    )
 
     with torch.no_grad():
         clean_probs = F.softmax(model(x), dim=1)
@@ -164,13 +267,19 @@ def train_one_epoch(
     entropy_model=None,
     grad_clip: float | None = None,
     lambda_wads: float = 0.0,
+    lambda_rar: float = 0.0,
+    lambda_far: float = 0.0,
     lambda_curvature: float = 0.0,
     lambda_robust: float = 0.0,
     triguard_ig_steps: int = 8,
     baseline_modes: str = "zero,blur,noise,uniform,mean",
+    attr_robust_baseline: str = "zero",
+    far_samples: int = 2,
     baseline_min: float = 0.0,
     baseline_max: float = 1.0,
     curvature_noise_std: float = 0.01,
+    attr_robust_eps: float = 0.01,
+    attr_robust_alpha: float = 0.01,
     robust_eps: float = 0.01,
     robust_alpha: float = 0.01,
     robust_clamp_min: float | None = None,
@@ -194,6 +303,8 @@ def train_one_epoch(
         needs_higher_order = (
             lambda_entropy > 0
             or lambda_wads > 0
+            or lambda_rar > 0
+            or lambda_far > 0
             or lambda_curvature > 0
         )
         sdp_ctx = _sdp_math_context(device, require_higher_order=needs_higher_order)
@@ -225,6 +336,34 @@ def train_one_epoch(
                         x.float(),
                         y,
                         noise_std=curvature_noise_std,
+                    )
+                if lambda_rar > 0:
+                    loss = loss + lambda_rar * rar_attribution_term(
+                        entropy_model,
+                        x.float(),
+                        y,
+                        baseline_mode=attr_robust_baseline,
+                        baseline_min=baseline_min,
+                        baseline_max=baseline_max,
+                        ig_steps=triguard_ig_steps,
+                        eps=attr_robust_eps,
+                        alpha=attr_robust_alpha,
+                        clamp_min=robust_clamp_min,
+                        clamp_max=robust_clamp_max,
+                    )
+                if lambda_far > 0:
+                    loss = loss + lambda_far * far_attribution_term(
+                        entropy_model,
+                        x.float(),
+                        y,
+                        baseline_mode=attr_robust_baseline,
+                        baseline_min=baseline_min,
+                        baseline_max=baseline_max,
+                        ig_steps=triguard_ig_steps,
+                        eps=attr_robust_eps,
+                        samples=far_samples,
+                        clamp_min=robust_clamp_min,
+                        clamp_max=robust_clamp_max,
                     )
                 if lambda_robust > 0:
                     loss = loss + lambda_robust * robust_consistency_term(
@@ -259,6 +398,34 @@ def train_one_epoch(
                         x,
                         y,
                         noise_std=curvature_noise_std,
+                    )
+                if lambda_rar > 0:
+                    loss = loss + lambda_rar * rar_attribution_term(
+                        entropy_model,
+                        x,
+                        y,
+                        baseline_mode=attr_robust_baseline,
+                        baseline_min=baseline_min,
+                        baseline_max=baseline_max,
+                        ig_steps=triguard_ig_steps,
+                        eps=attr_robust_eps,
+                        alpha=attr_robust_alpha,
+                        clamp_min=robust_clamp_min,
+                        clamp_max=robust_clamp_max,
+                    )
+                if lambda_far > 0:
+                    loss = loss + lambda_far * far_attribution_term(
+                        entropy_model,
+                        x,
+                        y,
+                        baseline_mode=attr_robust_baseline,
+                        baseline_min=baseline_min,
+                        baseline_max=baseline_max,
+                        ig_steps=triguard_ig_steps,
+                        eps=attr_robust_eps,
+                        samples=far_samples,
+                        clamp_min=robust_clamp_min,
+                        clamp_max=robust_clamp_max,
                     )
                 if lambda_robust > 0:
                     loss = loss + lambda_robust * robust_consistency_term(

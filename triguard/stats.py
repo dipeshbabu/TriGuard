@@ -15,8 +15,21 @@ METRICS = [
     "entropy_mean",
     "ads_mean",
     "wads_mean",
+    "pp_stability_l2_mean",
+    "pp_stability_cosine_mean",
+    "pp_stability_topk_jaccard_mean",
+    "pp_stability_keep_rate",
+    "train_seconds",
+    "eval_seconds",
+    "total_seconds",
 ]
-REGULARIZER_COLUMNS = ["lambda_wads", "lambda_curvature", "lambda_robust"]
+REGULARIZER_COLUMNS = [
+    "lambda_wads",
+    "lambda_rar",
+    "lambda_far",
+    "lambda_curvature",
+    "lambda_robust",
+]
 
 
 def _group_cols(df, base_cols):
@@ -142,6 +155,11 @@ def ads_validity(main_df, faith_df, out_dir, min_gap=0.05):
             "ads_mean": "mean",
             "entropy_mean": "mean",
             **({"wads_mean": "mean"} if "wads_mean" in main_df.columns else {}),
+            **(
+                {"pp_stability_l2_mean": "mean"}
+                if "pp_stability_l2_mean" in main_df.columns
+                else {}
+            ),
         }
     )
     faith = faith_df.groupby(faith_group_cols, as_index=False).agg(

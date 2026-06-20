@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-OUT_DIR="${OUT_DIR:-outputs/icml2026_triguard_train}"
+OUT_DIR="${OUT_DIR:-outputs/icml2026_triguard_train_mainconf}"
 SEEDS="${SEEDS:-0,1,2,3,4}"
 BATCH="${BATCH:-32}"
 K_ATTR="${K_ATTR:-100}"
@@ -9,6 +9,7 @@ EVAL_BATCHES_ADV="${EVAL_BATCHES_ADV:-10}"
 IG_STEPS="${IG_STEPS:-32}"
 TRIGUARD_IG_STEPS="${TRIGUARD_IG_STEPS:-8}"
 BASELINE_MODES="${BASELINE_MODES:-zero,blur,noise,uniform,mean}"
+FAR_SAMPLES="${FAR_SAMPLES:-2}"
 
 python run_triguard.py \
   --mode main \
@@ -17,10 +18,13 @@ python run_triguard.py \
   --seeds "$SEEDS" \
   --lambda_entropy 0.0 \
   --lambda_wads 0.05 \
+  --lambda_rar 0.0 \
+  --lambda_far 0.0 \
   --lambda_curvature 0.01 \
   --lambda_robust 0.25 \
   --triguard_ig_steps "$TRIGUARD_IG_STEPS" \
   --baseline_modes "$BASELINE_MODES" \
+  --far_samples "$FAR_SAMPLES" \
   --batch "$BATCH" \
   --K_attr "$K_ATTR" \
   --ig_steps "$IG_STEPS" \

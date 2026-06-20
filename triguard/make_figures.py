@@ -18,6 +18,8 @@ RADAR_METRICS = [
     "entropy_mean",
     "ads_mean",
     "wads_mean",
+    "pp_stability_l2_mean",
+    "pp_stability_topk_jaccard_mean",
 ]
 
 

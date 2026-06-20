@@ -41,8 +41,11 @@ def uniform_baseline(x, low: float, high: float):
     return torch.empty_like(x).uniform_(low, high)
 
 
-def noise_baseline(x, std: float = 0.1):
-    return torch.randn_like(x) * std
+def noise_baseline(x, std: float = 0.1, low: float | None = None, high: float | None = None):
+    baseline = torch.randn_like(x) * std
+    if low is not None and high is not None:
+        baseline = baseline.clamp(low, high)
+    return baseline
 
 
 def ads_baseline(model, x, target, b1, b2, steps=50) -> float | None:

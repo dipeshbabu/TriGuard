@@ -1,6 +1,7 @@
 import argparse
 import os
 import random
+import time
 
 import numpy as np
 import torch
@@ -131,16 +132,26 @@ def resolve_cert_eps(args, attack_eps, pixel_eps: float) -> float:
 def regularizer_fields(args):
     return {
         "lambda_wads": args.lambda_wads,
+        "lambda_rar": args.lambda_rar,
+        "lambda_far": args.lambda_far,
         "lambda_curvature": args.lambda_curvature,
         "lambda_robust": args.lambda_robust,
     }
 
 
 def checkpoint_regularizer_suffix(args) -> str:
-    if args.lambda_wads == 0 and args.lambda_curvature == 0 and args.lambda_robust == 0:
+    if (
+        args.lambda_wads == 0
+        and args.lambda_rar == 0
+        and args.lambda_far == 0
+        and args.lambda_curvature == 0
+        and args.lambda_robust == 0
+    ):
         return ""
     return (
         f"_wads{args.lambda_wads:.3f}"
+        f"_rar{args.lambda_rar:.3f}"
+        f"_far{args.lambda_far:.3f}"
         f"_curv{args.lambda_curvature:.3f}"
         f"_rob{args.lambda_robust:.3f}"
     )
@@ -361,7 +372,8 @@ def run_one_setting(args, seed: int, ds: str, model_name: str, lam: float, devic
         f"epochs={epochs}, input_profile={input_profile}, optimizer={training_setup['optimizer_name']}, "
         f"lr={training_setup['lr']}, scheduler={'cosine' if scheduler is not None else 'none'}, "
         f"grad_clip={grad_clip}, compile={args.compile}, "
-        f"wads={args.lambda_wads}, curvature={args.lambda_curvature}, robust={args.lambda_robust}"
+        f"wads={args.lambda_wads}, rar={args.lambda_rar}, far={args.lambda_far}, "
+        f"curvature={args.lambda_curvature}, robust={args.lambda_robust}"
     )
 
     ckpt_path = None
@@ -377,6 +389,8 @@ def run_one_setting(args, seed: int, ds: str, model_name: str, lam: float, devic
         state = torch.load(args.load_ckpt, map_location=device, weights_only=True)
         eval_model.load_state_dict(state)
 
+    train_seconds = 0.0
+    train_start = time.perf_counter()
     if not args.eval_only:
         train_with_early_stopping(
             model,
@@ -396,25 +410,33 @@ def run_one_setting(args, seed: int, ds: str, model_name: str, lam: float, devic
             state_model=eval_model,
             train_kwargs={
                 "lambda_wads": args.lambda_wads,
+                "lambda_rar": args.lambda_rar,
+                "lambda_far": args.lambda_far,
                 "lambda_curvature": args.lambda_curvature,
                 "lambda_robust": args.lambda_robust,
                 "triguard_ig_steps": args.triguard_ig_steps,
                 "baseline_modes": args.baseline_modes,
+                "attr_robust_baseline": args.attr_robust_baseline,
+                "far_samples": args.far_samples,
                 "baseline_min": baseline_min,
                 "baseline_max": baseline_max,
                 "curvature_noise_std": args.curvature_noise_std,
+                "attr_robust_eps": scalar_eps(eps) * args.attr_robust_eps_scale,
+                "attr_robust_alpha": scalar_eps(eps) * args.attr_robust_alpha_scale,
                 "robust_eps": scalar_eps(eps) * args.robust_eps_scale,
                 "robust_alpha": scalar_eps(eps) * args.robust_alpha_scale,
                 "robust_clamp_min": clamp_min,
                 "robust_clamp_max": clamp_max,
             },
         )
+        train_seconds = time.perf_counter() - train_start
 
     eval_model.eval()
     alpha = scale_eps(eps, 1.0 / 8.0)
     cert_eps = resolve_cert_eps(args, eps, pixel_eps)
 
     if mode in ["main", "lambda"]:
+        eval_start = time.perf_counter()
         clean = accuracy(eval_model, test_loader, device)
         adv_acc = pgd_accuracy(
             eval_model,
@@ -447,7 +469,11 @@ def run_one_setting(args, seed: int, ds: str, model_name: str, lam: float, devic
             baseline_min=baseline_min,
             baseline_max=baseline_max,
             baseline_modes=args.baseline_modes,
+            stability_modes=args.stability_modes,
+            stability_topk=args.stability_topk,
+            stability_noise_std=args.stability_noise_std,
         )
+        eval_seconds = time.perf_counter() - eval_start
         return {
             "dataset": ds,
             "model": model_name,
@@ -456,7 +482,11 @@ def run_one_setting(args, seed: int, ds: str, model_name: str, lam: float, devic
             "lambda_entropy": lam,
             **regularizer_fields(args),
             "baseline_modes": args.baseline_modes,
+            "attr_robust_baseline": args.attr_robust_baseline,
             "cert_eps": cert_eps,
+            "train_seconds": train_seconds,
+            "eval_seconds": eval_seconds,
+            "total_seconds": train_seconds + eval_seconds,
             "clean_acc": clean,
             "adv_error": adv_error,
             **main_metrics,
@@ -567,13 +597,22 @@ def main():
     p.add_argument("--lr", type=float, default=None)
     p.add_argument("--lambda_entropy", type=float, default=0.05)
     p.add_argument("--lambda_wads", type=float, default=0.0)
+    p.add_argument("--lambda_rar", type=float, default=0.0)
+    p.add_argument("--lambda_far", type=float, default=0.0)
     p.add_argument("--lambda_curvature", type=float, default=0.0)
     p.add_argument("--lambda_robust", type=float, default=0.0)
     p.add_argument("--triguard_ig_steps", type=int, default=8)
     p.add_argument("--baseline_modes", type=str, default="zero,blur,noise,uniform,mean")
+    p.add_argument("--attr_robust_baseline", type=str, default="zero")
+    p.add_argument("--far_samples", type=int, default=2)
     p.add_argument("--curvature_noise_std", type=float, default=0.01)
+    p.add_argument("--attr_robust_eps_scale", type=float, default=1.0)
+    p.add_argument("--attr_robust_alpha_scale", type=float, default=0.25)
     p.add_argument("--robust_eps_scale", type=float, default=1.0)
     p.add_argument("--robust_alpha_scale", type=float, default=0.25)
+    p.add_argument("--stability_modes", type=str, default="noise,brightness,contrast,blur,shift")
+    p.add_argument("--stability_topk", type=int, default=50)
+    p.add_argument("--stability_noise_std", type=float, default=0.03)
     p.add_argument("--weight_decay", type=float, default=0.05)
     p.add_argument("--warmup_epochs", type=int, default=3)
     p.add_argument("--ig_steps", type=int, default=50)
@@ -643,10 +682,16 @@ def main():
             "input_profile",
             "lambda_entropy",
             "lambda_wads",
+            "lambda_rar",
+            "lambda_far",
             "lambda_curvature",
             "lambda_robust",
             "baseline_modes",
+            "attr_robust_baseline",
             "cert_eps",
+            "train_seconds",
+            "eval_seconds",
+            "total_seconds",
             "clean_acc",
             "adv_error",
             "bound_check_rate",
@@ -654,9 +699,14 @@ def main():
             "entropy_mean",
             "ads_mean",
             "wads_mean",
+            "pp_stability_l2_mean",
+            "pp_stability_cosine_mean",
+            "pp_stability_topk_jaccard_mean",
+            "pp_stability_keep_rate",
             "entropy_valid_n",
             "ads_valid_n",
             "wads_valid_n",
+            "pp_stability_valid_n",
         ]
         for seed in seeds:
             for ds, model_name in experiment_pairs:
@@ -674,10 +724,16 @@ def main():
             "input_profile",
             "lambda_entropy",
             "lambda_wads",
+            "lambda_rar",
+            "lambda_far",
             "lambda_curvature",
             "lambda_robust",
             "baseline_modes",
+            "attr_robust_baseline",
             "cert_eps",
+            "train_seconds",
+            "eval_seconds",
+            "total_seconds",
             "clean_acc",
             "adv_error",
             "bound_check_rate",
@@ -685,9 +741,14 @@ def main():
             "entropy_mean",
             "ads_mean",
             "wads_mean",
+            "pp_stability_l2_mean",
+            "pp_stability_cosine_mean",
+            "pp_stability_topk_jaccard_mean",
+            "pp_stability_keep_rate",
             "entropy_valid_n",
             "ads_valid_n",
             "wads_valid_n",
+            "pp_stability_valid_n",
         ]
         lam_list = [float(x.strip())
                     for x in args.lambda_list.split(",") if x.strip()]
@@ -709,6 +770,8 @@ def main():
             "input_profile",
             "K",
             "lambda_wads",
+            "lambda_rar",
+            "lambda_far",
             "lambda_curvature",
             "lambda_robust",
             "ads_zero_blur",
@@ -735,6 +798,8 @@ def main():
             "input_profile",
             "K",
             "lambda_wads",
+            "lambda_rar",
+            "lambda_far",
             "lambda_curvature",
             "lambda_robust",
             "ig_del_auc_mean",
@@ -758,6 +823,8 @@ def main():
             "input_profile",
             "lambda_entropy",
             "lambda_wads",
+            "lambda_rar",
+            "lambda_far",
             "lambda_curvature",
             "lambda_robust",
             "cert_pixel_eps",

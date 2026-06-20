@@ -17,7 +17,13 @@ MODEL_ORDER = [
     "swin_t_imagenet",
 ]
 
-REGULARIZER_COLUMNS = ["lambda_wads", "lambda_curvature", "lambda_robust"]
+REGULARIZER_COLUMNS = [
+    "lambda_wads",
+    "lambda_rar",
+    "lambda_far",
+    "lambda_curvature",
+    "lambda_robust",
+]
 
 
 def fmt_mean_std(mean_series, std_series, pct: bool = False):
@@ -67,6 +73,7 @@ def add_existing(cols, df):
 def main():
     p = argparse.ArgumentParser()
     p.add_argument("--out", type=str, default="outputs/icml2026")
+    p.add_argument("--label_prefix", type=str, default="")
     args = p.parse_args()
 
     main_csv = os.path.join(args.out, "table1_main.csv")
@@ -78,6 +85,11 @@ def main():
     tex_path = os.path.join(args.out, "paper_tables.tex")
 
     pieces: list[str] = []
+
+    def label(name: str) -> str:
+        if args.label_prefix:
+            return f"tab:{args.label_prefix}_{name}"
+        return f"tab:{name}"
 
     if os.path.exists(main_csv):
         df = pd.read_csv(main_csv)
@@ -95,6 +107,17 @@ def main():
         }
         if "wads_mean" in df.columns:
             agg_map["wads_mean"] = ["mean", "std"]
+        for metric in [
+            "pp_stability_l2_mean",
+            "pp_stability_cosine_mean",
+            "pp_stability_topk_jaccard_mean",
+            "pp_stability_keep_rate",
+            "train_seconds",
+            "eval_seconds",
+            "total_seconds",
+        ]:
+            if metric in df.columns:
+                agg_map[metric] = ["mean", "std"]
         grp = df.groupby(group_cols, as_index=False).agg(agg_map)
         grp.columns = ["_".join(c).strip("_")
                        for c in grp.columns.to_flat_index()]
@@ -109,6 +132,21 @@ def main():
         }
         if "wads_mean_mean" in grp.columns:
             table_data["WADS"] = fmt_mean_std(grp["wads_mean_mean"], grp["wads_mean_std"])
+        if "pp_stability_l2_mean_mean" in grp.columns:
+            table_data["PP L2"] = fmt_mean_std(
+                grp["pp_stability_l2_mean_mean"],
+                grp["pp_stability_l2_mean_std"],
+            )
+        if "pp_stability_topk_jaccard_mean_mean" in grp.columns:
+            table_data["PP top-k J"] = fmt_mean_std(
+                grp["pp_stability_topk_jaccard_mean_mean"],
+                grp["pp_stability_topk_jaccard_mean_std"],
+            )
+        if "total_seconds_mean" in grp.columns:
+            table_data["Time (s)"] = fmt_mean_std(
+                grp["total_seconds_mean"],
+                grp["total_seconds_std"],
+            )
         if not grp["crown_rate_mean"].isna().all():
             table_data["CROWN"] = fmt_mean_std(grp["crown_rate_mean"], grp["crown_rate_std"])
         out = pd.DataFrame(table_data)
@@ -117,7 +155,7 @@ def main():
             latex_table(
                 out,
                 "Main results with mean and standard deviation across seeds. We report clean accuracy, PGD error, bound check rate, attribution entropy, and Attribution Drift Score. Certification results are reported separately when the CROWN sweep is run.",
-                "tab:main_results",
+                label("main_results"),
             )
         )
 
@@ -130,6 +168,8 @@ def main():
         }
         if "wads_mean" in df.columns:
             seed_agg["wads_mean"] = ["std"]
+        if "pp_stability_l2_mean" in df.columns:
+            seed_agg["pp_stability_l2_mean"] = ["std"]
         seed_only = df.groupby(seed_cols, as_index=False).agg(seed_agg)
         seed_only.columns = ["_".join(c).strip("_")
                              for c in seed_only.columns.to_flat_index()]
@@ -143,6 +183,8 @@ def main():
         }
         if "wads_mean_std" in seed_only.columns:
             seed_data["WADS std"] = seed_only["wads_mean_std"].map(lambda x: f"{x:.3f}")
+        if "pp_stability_l2_mean_std" in seed_only.columns:
+            seed_data["PP L2 std"] = seed_only["pp_stability_l2_mean_std"].map(lambda x: f"{x:.3f}")
         seed_out = pd.DataFrame(seed_data)
         seed_out = sort_df(seed_out)
         seed_out.to_csv(seed_csv, index=False)
@@ -150,7 +192,7 @@ def main():
             latex_table(
                 seed_out,
                 "Seed variance summary across the main benchmark settings.",
-                "tab:seed_variance",
+                label("seed_variance"),
             )
         )
 
@@ -165,6 +207,8 @@ def main():
         }
         if "wads_mean" in df.columns:
             agg_map["wads_mean"] = "mean"
+        if "pp_stability_l2_mean" in df.columns:
+            agg_map["pp_stability_l2_mean"] = "mean"
         grp = df.groupby(group_cols, as_index=False).agg(agg_map)
         out = pd.DataFrame(
             {
@@ -179,12 +223,14 @@ def main():
         )
         if "wads_mean" in grp.columns:
             out["WADS"] = grp["wads_mean"].map(lambda x: f"{x:.3f}")
+        if "pp_stability_l2_mean" in grp.columns:
+            out["PP L2"] = grp["pp_stability_l2_mean"].map(lambda x: f"{x:.3f}")
         out = sort_df(out)
         pieces.append(
             latex_table(
                 out,
                 "Effect of gradient entropy regularization strength on performance and explanation stability.",
-                "tab:lambda_ablation",
+                label("lambda_ablation"),
             )
         )
 
@@ -195,7 +241,7 @@ def main():
             latex_table(
                 df,
                 "Baseline sensitivity of Attribution Drift Score across baseline pairs.",
-                "tab:baseline_sensitivity",
+                label("baseline_sensitivity"),
             )
         )
 
@@ -225,7 +271,7 @@ def main():
             latex_table(
                 out,
                 "Appendix faithfulness comparison for Integrated Gradients and SmoothGrad squared.",
-                "tab:faithfulness_auc",
+                label("faithfulness_auc"),
             )
         )
 
@@ -251,7 +297,7 @@ def main():
             latex_table(
                 out,
                 "Certification sweep across smaller pixel-space perturbation radii. This table separates certification radius from the PGD attack radius.",
-                "tab:certification_sweep",
+                label("certification_sweep"),
             )
         )
 

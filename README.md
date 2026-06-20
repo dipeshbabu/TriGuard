@@ -28,11 +28,15 @@ The current paper workflow centers on:
 - attribution entropy
 - fixed-baseline Attribution Drift Score
 - worst-case Attribution Drift Score (WADS)
+- prediction-preserving attribution stability under small image transforms
 - deletion/insertion faithfulness AUC
+- train, evaluation, and total runtime
 
 TriGuard-Train additionally supports:
 
 - WADS regularization over a finite baseline family
+- RAR-like fixed-baseline adversarial attribution regularization
+- FAR-like fixed-baseline local attribution regularization
 - local gradient-variation regularization
 - one-step adversarial consistency regularization
 - entropy-only and CE-only controls
@@ -119,6 +123,8 @@ Run a focused TriGuard-Train ablation. By default this runs CIFAR-10 with `resne
 
 - CE only
 - entropy only
+- RAR-like fixed-baseline attribution regularization
+- FAR-like fixed-baseline attribution regularization
 - small WADS
 - WADS only
 - WADS + curvature
@@ -140,12 +146,30 @@ Generate artifacts for the baseline, TriGuard-Train, and TriGuard-Train ablation
 bash scripts/11_make_triguard_train_artifacts.sh
 ```
 
+Run the full main-conference rerun sequence:
+
+```bash
+bash scripts/12_run_mainconf_workflow.sh
+```
+
+This runs the pretrained grid, certification sweep, TriGuard-Train run, TriGuard-Train ablation, and artifact generation. To resume a partial run, set any block flag to `0`, for example:
+
+```bash
+RUN_PRETRAINED_GRID=0 RUN_CERT_SWEEP=0 bash scripts/12_run_mainconf_workflow.sh
+```
+
 All TriGuard-Train scripts accept environment overrides. For example:
 
 ```bash
 SEEDS=0,1 DATASET=cifar100 MODEL=convnext_tiny_imagenet \
   bash scripts/10_run_triguard_train_ablation.sh
 ```
+
+The upgraded training scripts write to `outputs/icml2026_triguard_train_mainconf` and
+`outputs/icml2026_triguard_train_ablation_mainconf` by default. Reuse an old output
+directory only if its CSV headers match the current schema; otherwise start a new
+directory so runtime, RAR/FAR, and prediction-preserving stability columns are not
+mixed with older results.
 
 To generate a saliency panel for a trained checkpoint:
 
