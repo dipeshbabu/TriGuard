@@ -1,4 +1,4 @@
-# TriGuard: A Multi-Axis Benchmark for Robustness and Attribution Stability
+# TriGuard: Testing Model Safety with Attribution Entropy, Verification, and Drift
 
 TriGuard is a practical evaluation toolkit for studying when prediction robustness, certification aware checks, and explanation stability disagree in image classifiers.
 
