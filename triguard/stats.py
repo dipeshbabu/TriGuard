@@ -7,7 +7,20 @@ import pandas as pd
 from scipy.stats import mannwhitneyu, spearmanr
 
 
-METRICS = ["clean_acc", "adv_error", "bound_check_rate", "crown_rate", "entropy_mean", "ads_mean"]
+METRICS = [
+    "clean_acc",
+    "adv_error",
+    "bound_check_rate",
+    "crown_rate",
+    "entropy_mean",
+    "ads_mean",
+    "wads_mean",
+]
+REGULARIZER_COLUMNS = ["lambda_wads", "lambda_curvature", "lambda_robust"]
+
+
+def _group_cols(df, base_cols):
+    return base_cols + [c for c in REGULARIZER_COLUMNS if c in df.columns]
 
 
 def _bootstrap_ci(values, rng, n_boot=5000, alpha=0.05):
@@ -25,7 +38,7 @@ def _bootstrap_ci(values, rng, n_boot=5000, alpha=0.05):
 def summarize_with_ci(df, out_dir):
     rng = np.random.default_rng(0)
     rows = []
-    group_cols = ["dataset", "model"]
+    group_cols = _group_cols(df, ["dataset", "model"])
     if "input_profile" in df.columns:
         group_cols.append("input_profile")
 
@@ -57,7 +70,12 @@ def summarize_with_ci(df, out_dir):
 
 def mann_whitney_grid(df, out_dir):
     rows = []
-    for dataset, ds_group in df.groupby("dataset"):
+    group_cols = _group_cols(df, ["dataset"])
+    for keys, ds_group in df.groupby(group_cols, dropna=False):
+        if not isinstance(keys, tuple):
+            keys = (keys,)
+        base = dict(zip(group_cols, keys))
+        dataset = base["dataset"]
         models = sorted(ds_group["model"].dropna().unique())
         for metric in METRICS:
             if metric not in ds_group.columns:
@@ -78,7 +96,7 @@ def mann_whitney_grid(df, out_dir):
                     stat, p = mannwhitneyu(a, b, alternative="two-sided")
                 rows.append(
                     {
-                        "dataset": dataset,
+                        **base,
                         "metric": metric,
                         "model_a": left,
                         "model_b": right,
@@ -98,7 +116,7 @@ def mann_whitney_grid(df, out_dir):
 
 def metric_correlations(df, out_dir):
     available = [m for m in METRICS if m in df.columns]
-    group = df.groupby(["dataset", "model"], as_index=False)[available].mean(numeric_only=True)
+    group = df.groupby(_group_cols(df, ["dataset", "model"]), as_index=False)[available].mean(numeric_only=True)
     rows = []
     for left, right in itertools.combinations(available, 2):
         x = pd.to_numeric(group[left], errors="coerce")
@@ -116,13 +134,20 @@ def metric_correlations(df, out_dir):
 
 
 def ads_validity(main_df, faith_df, out_dir, min_gap=0.05):
-    main = main_df.groupby(["dataset", "model"], as_index=False).agg(
-        {"ads_mean": "mean", "entropy_mean": "mean"}
+    main_group_cols = _group_cols(main_df, ["dataset", "model"])
+    faith_group_cols = _group_cols(faith_df, ["dataset", "model"])
+    merge_cols = [c for c in main_group_cols if c in faith_group_cols]
+    main = main_df.groupby(main_group_cols, as_index=False).agg(
+        {
+            "ads_mean": "mean",
+            "entropy_mean": "mean",
+            **({"wads_mean": "mean"} if "wads_mean" in main_df.columns else {}),
+        }
     )
-    faith = faith_df.groupby(["dataset", "model"], as_index=False).agg(
+    faith = faith_df.groupby(faith_group_cols, as_index=False).agg(
         {"ig_del_auc_mean": "mean", "ig_ins_auc_mean": "mean"}
     )
-    out = main.merge(faith, on=["dataset", "model"], how="left")
+    out = main.merge(faith, on=merge_cols, how="left")
     out["ig_auc_gap"] = out["ig_ins_auc_mean"] - out["ig_del_auc_mean"]
     out["ads_interpretation"] = np.where(
         out["ig_auc_gap"] >= min_gap,

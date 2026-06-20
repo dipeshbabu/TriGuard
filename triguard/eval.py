@@ -40,6 +40,43 @@ def _report_skipped(metric_name: str, valid_count: int, total_count: int):
         )
 
 
+def _baseline_family(x, modes: str, baseline_min: float, baseline_max: float):
+    family = {}
+    for mode in [m.strip().lower() for m in modes.split(",") if m.strip()]:
+        if mode == "zero":
+            family[mode] = torch.zeros_like(x)
+        elif mode == "blur":
+            family[mode] = blurred_baseline(x)
+        elif mode == "noise":
+            family[mode] = noise_baseline(x)
+        elif mode == "uniform":
+            family[mode] = uniform_baseline(x, low=baseline_min, high=baseline_max)
+        elif mode == "mean":
+            family[mode] = torch.full_like(x, (baseline_min + baseline_max) / 2.0)
+        else:
+            raise ValueError(f"Unknown baseline mode: {mode}")
+    return family
+
+
+def _worst_ads_baseline(model, x, target, modes, baseline_min, baseline_max, steps):
+    family = _baseline_family(x, modes, baseline_min, baseline_max)
+    if len(family) < 2:
+        return None
+    attrs = {
+        name: integrated_gradients(model, x, target, baseline, steps=steps)
+        for name, baseline in family.items()
+    }
+    best = None
+    names = list(attrs)
+    for i, left in enumerate(names):
+        for right in names[i + 1:]:
+            dist = torch.norm((attrs[left] - attrs[right]).flatten(), p=2)
+            if torch.isfinite(dist):
+                value = float(dist.item())
+                best = value if best is None else max(best, value)
+    return best
+
+
 @torch.no_grad()
 def accuracy(model, loader, device):
     model.eval()
@@ -89,12 +126,14 @@ def evaluate_main_metrics(
     cert_eps=None,
     baseline_min=0.0,
     baseline_max=1.0,
+    baseline_modes="zero,blur,noise,uniform,mean",
 ):
     rng = np.random.default_rng(seed)
     idxs = rng.choice(len(test_set), size=min(k, len(test_set)), replace=False)
 
     ent_list = []
     ads_list = []
+    wads_list = []
     bound_list = []
     crown_list = []
 
@@ -115,6 +154,18 @@ def evaluate_main_metrics(
         ig = integrated_gradients(model, x, target, b0, steps=ig_steps)
         _append_finite(ent_list, attribution_entropy(ig))
         _append_finite(ads_list, ads_baseline(model, x, target, b0, b_blur, steps=ig_steps))
+        _append_finite(
+            wads_list,
+            _worst_ads_baseline(
+                model,
+                x,
+                target,
+                modes=baseline_modes,
+                baseline_min=baseline_min,
+                baseline_max=baseline_max,
+                steps=ig_steps,
+            ),
+        )
 
         bound_ok = empirical_probe(model, x.squeeze(0), bound_probe_samples, eps, clamp_min, clamp_max, device)
         bound_list.append(int(bound_ok))
@@ -126,11 +177,14 @@ def evaluate_main_metrics(
 
     _report_skipped("entropy_mean", len(ent_list), len(idxs))
     _report_skipped("ads_mean", len(ads_list), len(idxs))
+    _report_skipped("wads_mean", len(wads_list), len(idxs))
     return {
         "entropy_mean": _safe_mean(ent_list),
         "ads_mean": _safe_mean(ads_list),
+        "wads_mean": _safe_mean(wads_list),
         "entropy_valid_n": int(len(ent_list)),
         "ads_valid_n": int(len(ads_list)),
+        "wads_valid_n": int(len(wads_list)),
         "bound_check_rate": _safe_mean(bound_list),
         "crown_rate": _safe_mean(crown_list),
     }

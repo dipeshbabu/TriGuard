@@ -100,6 +100,18 @@ Run a separate certification sweep on a CROWN-friendly MNIST/SimpleCNN setting w
 bash scripts/07_run_certification_sweep.sh
 ```
 
+Run TriGuard-Train with baseline-adversarial attribution stabilization:
+
+```bash
+bash scripts/09_run_triguard_train.sh
+```
+
+Run a focused TriGuard-Train ablation:
+
+```bash
+bash scripts/10_run_triguard_train_ablation.sh
+```
+
 Generate statistical summaries, Mann-Whitney tests, metric correlations, radar plots, and updated LaTeX tables:
 
 ```bash

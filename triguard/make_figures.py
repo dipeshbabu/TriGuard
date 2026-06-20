@@ -11,7 +11,20 @@ from .models import get_model, uses_imagenet_preprocessing
 from .plots import save_correlation_heatmap, save_radar_plot, save_saliency_panel
 
 
-RADAR_METRICS = ["clean_acc", "adv_error", "bound_check_rate", "entropy_mean", "ads_mean"]
+RADAR_METRICS = [
+    "clean_acc",
+    "adv_error",
+    "bound_check_rate",
+    "entropy_mean",
+    "ads_mean",
+    "wads_mean",
+]
+
+
+def _scale_eps(eps, scale: float):
+    if isinstance(eps, (list, tuple)):
+        return tuple(float(v) * scale for v in eps)
+    return float(eps) * scale
 
 
 def make_aggregate_figures(out_dir):
@@ -95,7 +108,7 @@ def make_saliency_panel(args):
         x_batch,
         y_tensor,
         eps=eps,
-        alpha=eps / 8.0,
+        alpha=_scale_eps(eps, 1.0 / 8.0),
         steps=args.pgd_steps,
         clamp_min=clamp_min,
         clamp_max=clamp_max,

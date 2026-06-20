@@ -3,6 +3,8 @@ import torch
 import torch.nn as nn
 from auto_LiRPA import BoundedModule, BoundedTensor, PerturbationLpNorm
 
+from .attacks import _as_channel_tensor
+
 
 class MarginModel(nn.Module):
     def __init__(self, model: nn.Module, y: int):
@@ -40,10 +42,11 @@ def empirical_probe(model, x, num_samples, eps, clamp_min, clamp_max, device):
     if x.dim() == 3:
         x = x.unsqueeze(0)
     x = x.to(device)
+    eps = _as_channel_tensor(eps, x)
     with torch.no_grad():
         base = model(x).argmax(dim=1).item()
     for _ in range(num_samples):
-        noise = torch.empty_like(x).uniform_(-eps, eps)
+        noise = (2.0 * torch.rand_like(x) - 1.0) * eps
         x2 = torch.clamp(x + noise, clamp_min, clamp_max)
         with torch.no_grad():
             if model(x2).argmax(dim=1).item() != base:

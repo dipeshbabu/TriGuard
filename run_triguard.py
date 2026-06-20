@@ -99,6 +99,18 @@ def parse_seeds(seed: int, seeds_arg: str | None):
     return [int(x.strip()) for x in seeds_arg.split(",") if x.strip()]
 
 
+def scale_eps(eps, scale: float):
+    if isinstance(eps, (list, tuple)):
+        return tuple(float(v) * scale for v in eps)
+    return float(eps) * scale
+
+
+def scalar_eps(eps) -> float:
+    if isinstance(eps, (list, tuple)):
+        return float(max(eps))
+    return float(eps)
+
+
 def resolve_epochs(args, dataset: str, model_name: str) -> int:
     if args.epochs is not None:
         return args.epochs
@@ -107,12 +119,31 @@ def resolve_epochs(args, dataset: str, model_name: str) -> int:
     return DEFAULT_EPOCHS.get(dataset.lower(), 5)
 
 
-def resolve_cert_eps(args, attack_eps: float, pixel_eps: float) -> float:
+def resolve_cert_eps(args, attack_eps, pixel_eps: float) -> float:
+    attack_eps = scalar_eps(attack_eps)
     if args.cert_eps is not None:
         return float(args.cert_eps)
     if args.cert_pixel_eps is not None:
         return float(attack_eps * (args.cert_pixel_eps / pixel_eps))
     return float(attack_eps * args.cert_eps_scale)
+
+
+def regularizer_fields(args):
+    return {
+        "lambda_wads": args.lambda_wads,
+        "lambda_curvature": args.lambda_curvature,
+        "lambda_robust": args.lambda_robust,
+    }
+
+
+def checkpoint_regularizer_suffix(args) -> str:
+    if args.lambda_wads == 0 and args.lambda_curvature == 0 and args.lambda_robust == 0:
+        return ""
+    return (
+        f"_wads{args.lambda_wads:.3f}"
+        f"_curv{args.lambda_curvature:.3f}"
+        f"_rob{args.lambda_robust:.3f}"
+    )
 
 
 def build_training_setup(args, dataset: str, model_name: str, model, epochs: int):
@@ -213,11 +244,13 @@ def train_with_early_stopping(
     min_delta: float = 1e-4,
     ckpt_path: str | None = None,
     state_model=None,
+    train_kwargs=None,
 ):
     best = float("inf")
     bad = 0
     best_state = None
     state_model = state_model or model
+    train_kwargs = train_kwargs or {}
 
     for _ in range(epochs):
         loss = train_one_epoch(
@@ -229,6 +262,7 @@ def train_with_early_stopping(
             scaler=scaler,
             entropy_model=entropy_model,
             grad_clip=grad_clip,
+            **train_kwargs,
         )
         if scheduler is not None:
             scheduler.step()
@@ -326,7 +360,8 @@ def run_one_setting(args, seed: int, ds: str, model_name: str, lam: float, devic
         f"[Train Config] {ds}/{model_name}: "
         f"epochs={epochs}, input_profile={input_profile}, optimizer={training_setup['optimizer_name']}, "
         f"lr={training_setup['lr']}, scheduler={'cosine' if scheduler is not None else 'none'}, "
-        f"grad_clip={grad_clip}, compile={args.compile}"
+        f"grad_clip={grad_clip}, compile={args.compile}, "
+        f"wads={args.lambda_wads}, curvature={args.lambda_curvature}, robust={args.lambda_robust}"
     )
 
     ckpt_path = None
@@ -334,7 +369,8 @@ def run_one_setting(args, seed: int, ds: str, model_name: str, lam: float, devic
         ckpt_path = os.path.join(
             args.out,
             "checkpoints",
-            f"{mode}_{ds}_{model_name}_seed{seed}_lam{lam:.3f}.pt",
+            f"{mode}_{ds}_{model_name}_seed{seed}_lam{lam:.3f}"
+            f"{checkpoint_regularizer_suffix(args)}.pt",
         )
 
     if args.load_ckpt:
@@ -358,10 +394,24 @@ def run_one_setting(args, seed: int, ds: str, model_name: str, lam: float, devic
             min_delta=args.min_delta,
             ckpt_path=ckpt_path,
             state_model=eval_model,
+            train_kwargs={
+                "lambda_wads": args.lambda_wads,
+                "lambda_curvature": args.lambda_curvature,
+                "lambda_robust": args.lambda_robust,
+                "triguard_ig_steps": args.triguard_ig_steps,
+                "baseline_modes": args.baseline_modes,
+                "baseline_min": baseline_min,
+                "baseline_max": baseline_max,
+                "curvature_noise_std": args.curvature_noise_std,
+                "robust_eps": scalar_eps(eps) * args.robust_eps_scale,
+                "robust_alpha": scalar_eps(eps) * args.robust_alpha_scale,
+                "robust_clamp_min": clamp_min,
+                "robust_clamp_max": clamp_max,
+            },
         )
 
     eval_model.eval()
-    alpha = eps / 8.0
+    alpha = scale_eps(eps, 1.0 / 8.0)
     cert_eps = resolve_cert_eps(args, eps, pixel_eps)
 
     if mode in ["main", "lambda"]:
@@ -396,6 +446,7 @@ def run_one_setting(args, seed: int, ds: str, model_name: str, lam: float, devic
             cert_eps=cert_eps,
             baseline_min=baseline_min,
             baseline_max=baseline_max,
+            baseline_modes=args.baseline_modes,
         )
         return {
             "dataset": ds,
@@ -403,6 +454,8 @@ def run_one_setting(args, seed: int, ds: str, model_name: str, lam: float, devic
             "seed": seed,
             "input_profile": input_profile,
             "lambda_entropy": lam,
+            **regularizer_fields(args),
+            "baseline_modes": args.baseline_modes,
             "cert_eps": cert_eps,
             "clean_acc": clean,
             "adv_error": adv_error,
@@ -415,7 +468,7 @@ def run_one_setting(args, seed: int, ds: str, model_name: str, lam: float, devic
             float(x.strip()) for x in args.cert_eps_list.split(",") if x.strip()
         ]
         for pixel_value in cert_pixel_values:
-            active_cert_eps = eps * (pixel_value / pixel_eps)
+            active_cert_eps = scalar_eps(eps) * (pixel_value / pixel_eps)
             cert_metrics = evaluate_certification(
                 eval_model,
                 test_set,
@@ -431,6 +484,7 @@ def run_one_setting(args, seed: int, ds: str, model_name: str, lam: float, devic
                     "seed": seed,
                     "input_profile": input_profile,
                     "lambda_entropy": lam,
+                    **regularizer_fields(args),
                     "cert_pixel_eps": pixel_value,
                     **cert_metrics,
                 }
@@ -460,6 +514,7 @@ def run_one_setting(args, seed: int, ds: str, model_name: str, lam: float, devic
             "seed": seed,
             "input_profile": input_profile,
             "K": args.K_attr,
+            **regularizer_fields(args),
             **{k: appendix[k] for k in appendix if k.startswith("ads_") and k != "ads_adv_mean"},
         }
 
@@ -492,6 +547,7 @@ def run_one_setting(args, seed: int, ds: str, model_name: str, lam: float, devic
             "seed": seed,
             "input_profile": input_profile,
             "K": args.K_faith,
+            **regularizer_fields(args),
             "ig_del_auc_mean": res["ig_del_auc_mean"],
             "ig_ins_auc_mean": res["ig_ins_auc_mean"],
             "sg2_del_auc_mean": res["sg2_del_auc_mean"],
@@ -510,6 +566,14 @@ def main():
     p.add_argument("--batch", type=int, default=64)
     p.add_argument("--lr", type=float, default=None)
     p.add_argument("--lambda_entropy", type=float, default=0.05)
+    p.add_argument("--lambda_wads", type=float, default=0.0)
+    p.add_argument("--lambda_curvature", type=float, default=0.0)
+    p.add_argument("--lambda_robust", type=float, default=0.0)
+    p.add_argument("--triguard_ig_steps", type=int, default=8)
+    p.add_argument("--baseline_modes", type=str, default="zero,blur,noise,uniform,mean")
+    p.add_argument("--curvature_noise_std", type=float, default=0.01)
+    p.add_argument("--robust_eps_scale", type=float, default=1.0)
+    p.add_argument("--robust_alpha_scale", type=float, default=0.25)
     p.add_argument("--weight_decay", type=float, default=0.05)
     p.add_argument("--warmup_epochs", type=int, default=3)
     p.add_argument("--ig_steps", type=int, default=50)
@@ -578,6 +642,10 @@ def main():
             "seed",
             "input_profile",
             "lambda_entropy",
+            "lambda_wads",
+            "lambda_curvature",
+            "lambda_robust",
+            "baseline_modes",
             "cert_eps",
             "clean_acc",
             "adv_error",
@@ -585,8 +653,10 @@ def main():
             "crown_rate",
             "entropy_mean",
             "ads_mean",
+            "wads_mean",
             "entropy_valid_n",
             "ads_valid_n",
+            "wads_valid_n",
         ]
         for seed in seeds:
             for ds, model_name in experiment_pairs:
@@ -603,6 +673,10 @@ def main():
             "seed",
             "input_profile",
             "lambda_entropy",
+            "lambda_wads",
+            "lambda_curvature",
+            "lambda_robust",
+            "baseline_modes",
             "cert_eps",
             "clean_acc",
             "adv_error",
@@ -610,8 +684,10 @@ def main():
             "crown_rate",
             "entropy_mean",
             "ads_mean",
+            "wads_mean",
             "entropy_valid_n",
             "ads_valid_n",
+            "wads_valid_n",
         ]
         lam_list = [float(x.strip())
                     for x in args.lambda_list.split(",") if x.strip()]
@@ -632,6 +708,9 @@ def main():
             "seed",
             "input_profile",
             "K",
+            "lambda_wads",
+            "lambda_curvature",
+            "lambda_robust",
             "ads_zero_blur",
             "ads_zero_noise",
             "ads_zero_uniform",
@@ -655,6 +734,9 @@ def main():
             "seed",
             "input_profile",
             "K",
+            "lambda_wads",
+            "lambda_curvature",
+            "lambda_robust",
             "ig_del_auc_mean",
             "ig_ins_auc_mean",
             "sg2_del_auc_mean",
@@ -675,6 +757,9 @@ def main():
             "seed",
             "input_profile",
             "lambda_entropy",
+            "lambda_wads",
+            "lambda_curvature",
+            "lambda_robust",
             "cert_pixel_eps",
             "cert_eps",
             "crown_rate",

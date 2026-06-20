@@ -52,7 +52,7 @@ def _norm_bounds(mean, std):
 
 
 def _norm_eps(pixel_eps: float, std):
-    return max(pixel_eps / s for s in std)
+    return tuple(pixel_eps / s for s in std)
 
 
 def get_dataset(

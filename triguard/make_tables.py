@@ -17,6 +17,8 @@ MODEL_ORDER = [
     "swin_t_imagenet",
 ]
 
+REGULARIZER_COLUMNS = ["lambda_wads", "lambda_curvature", "lambda_robust"]
+
 
 def fmt_mean_std(mean_series, std_series, pct: bool = False):
     vals = []
@@ -58,6 +60,10 @@ def sort_df(df: pd.DataFrame) -> pd.DataFrame:
     return df
 
 
+def add_existing(cols, df):
+    return cols + [c for c in REGULARIZER_COLUMNS if c in df.columns]
+
+
 def main():
     p = argparse.ArgumentParser()
     p.add_argument("--out", type=str, default="outputs/icml2026")
@@ -78,16 +84,18 @@ def main():
         group_cols = ["dataset", "model", "lambda_entropy"]
         if "input_profile" in df.columns:
             group_cols.append("input_profile")
-        grp = df.groupby(group_cols, as_index=False).agg(
-            {
-                "clean_acc": ["mean", "std"],
-                "adv_error": ["mean", "std"],
-                "bound_check_rate": ["mean", "std"],
-                "crown_rate": ["mean", "std"],
-                "entropy_mean": ["mean", "std"],
-                "ads_mean": ["mean", "std"],
-            }
-        )
+        group_cols = add_existing(group_cols, df)
+        agg_map = {
+            "clean_acc": ["mean", "std"],
+            "adv_error": ["mean", "std"],
+            "bound_check_rate": ["mean", "std"],
+            "crown_rate": ["mean", "std"],
+            "entropy_mean": ["mean", "std"],
+            "ads_mean": ["mean", "std"],
+        }
+        if "wads_mean" in df.columns:
+            agg_map["wads_mean"] = ["mean", "std"]
+        grp = df.groupby(group_cols, as_index=False).agg(agg_map)
         grp.columns = ["_".join(c).strip("_")
                        for c in grp.columns.to_flat_index()]
         table_data = {
@@ -99,6 +107,8 @@ def main():
             "Entropy": fmt_mean_std(grp["entropy_mean_mean"], grp["entropy_mean_std"]),
             "ADS": fmt_mean_std(grp["ads_mean_mean"], grp["ads_mean_std"]),
         }
+        if "wads_mean_mean" in grp.columns:
+            table_data["WADS"] = fmt_mean_std(grp["wads_mean_mean"], grp["wads_mean_std"])
         if not grp["crown_rate_mean"].isna().all():
             table_data["CROWN"] = fmt_mean_std(grp["crown_rate_mean"], grp["crown_rate_std"])
         out = pd.DataFrame(table_data)
@@ -111,26 +121,29 @@ def main():
             )
         )
 
-        seed_only = df.groupby(["dataset", "model"], as_index=False).agg(
-            {
-                "clean_acc": ["std"],
-                "adv_error": ["std"],
-                "entropy_mean": ["std"],
-                "ads_mean": ["std"],
-            }
-        )
+        seed_cols = add_existing(["dataset", "model"], df)
+        seed_agg = {
+            "clean_acc": ["std"],
+            "adv_error": ["std"],
+            "entropy_mean": ["std"],
+            "ads_mean": ["std"],
+        }
+        if "wads_mean" in df.columns:
+            seed_agg["wads_mean"] = ["std"]
+        seed_only = df.groupby(seed_cols, as_index=False).agg(seed_agg)
         seed_only.columns = ["_".join(c).strip("_")
                              for c in seed_only.columns.to_flat_index()]
-        seed_out = pd.DataFrame(
-            {
-                "dataset": seed_only["dataset"],
-                "model": seed_only["model"],
-                "Acc std": seed_only["clean_acc_std"].map(lambda x: f"{100 * x:.2f}"),
-                "PGD err std": seed_only["adv_error_std"].map(lambda x: f"{100 * x:.2f}"),
-                "Entropy std": seed_only["entropy_mean_std"].map(lambda x: f"{x:.3f}"),
-                "ADS std": seed_only["ads_mean_std"].map(lambda x: f"{x:.3f}"),
-            }
-        )
+        seed_data = {
+            "dataset": seed_only["dataset"],
+            "model": seed_only["model"],
+            "Acc std": seed_only["clean_acc_std"].map(lambda x: f"{100 * x:.2f}"),
+            "PGD err std": seed_only["adv_error_std"].map(lambda x: f"{100 * x:.2f}"),
+            "Entropy std": seed_only["entropy_mean_std"].map(lambda x: f"{x:.3f}"),
+            "ADS std": seed_only["ads_mean_std"].map(lambda x: f"{x:.3f}"),
+        }
+        if "wads_mean_std" in seed_only.columns:
+            seed_data["WADS std"] = seed_only["wads_mean_std"].map(lambda x: f"{x:.3f}")
+        seed_out = pd.DataFrame(seed_data)
         seed_out = sort_df(seed_out)
         seed_out.to_csv(seed_csv, index=False)
         pieces.append(
@@ -143,14 +156,16 @@ def main():
 
     if os.path.exists(lambda_csv):
         df = pd.read_csv(lambda_csv)
-        grp = df.groupby(["dataset", "model", "lambda_entropy"], as_index=False).agg(
-            {
-                "clean_acc": "mean",
-                "adv_error": "mean",
-                "entropy_mean": "mean",
-                "ads_mean": "mean",
-            }
-        )
+        group_cols = add_existing(["dataset", "model", "lambda_entropy"], df)
+        agg_map = {
+            "clean_acc": "mean",
+            "adv_error": "mean",
+            "entropy_mean": "mean",
+            "ads_mean": "mean",
+        }
+        if "wads_mean" in df.columns:
+            agg_map["wads_mean"] = "mean"
+        grp = df.groupby(group_cols, as_index=False).agg(agg_map)
         out = pd.DataFrame(
             {
                 "dataset": grp["dataset"],
@@ -162,6 +177,8 @@ def main():
                 "ADS": grp["ads_mean"].map(lambda x: f"{x:.3f}"),
             }
         )
+        if "wads_mean" in grp.columns:
+            out["WADS"] = grp["wads_mean"].map(lambda x: f"{x:.3f}")
         out = sort_df(out)
         pieces.append(
             latex_table(
@@ -184,7 +201,8 @@ def main():
 
     if os.path.exists(faith_csv):
         df = pd.read_csv(faith_csv)
-        grp = df.groupby(["dataset", "model"], as_index=False).agg(
+        group_cols = add_existing(["dataset", "model"], df)
+        grp = df.groupby(group_cols, as_index=False).agg(
             {
                 "ig_del_auc_mean": "mean",
                 "ig_ins_auc_mean": "mean",
@@ -213,7 +231,8 @@ def main():
 
     if os.path.exists(cert_csv):
         df = pd.read_csv(cert_csv)
-        grp = df.groupby(["dataset", "model", "cert_pixel_eps"], as_index=False).agg(
+        group_cols = add_existing(["dataset", "model", "cert_pixel_eps"], df)
+        grp = df.groupby(group_cols, as_index=False).agg(
             {"crown_rate": ["mean", "std"], "cert_valid_n": "mean"}
         )
         grp.columns = ["_".join(c).strip("_")
