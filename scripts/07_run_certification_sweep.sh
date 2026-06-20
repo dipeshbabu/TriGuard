@@ -1,3 +1,6 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
 python run_triguard.py \
   --mode cert_sweep \
   --dataset mnist \
