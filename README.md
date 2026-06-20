@@ -19,14 +19,23 @@ bash scripts/00_install.sh
 
 ## Main outputs
 
-The workshop aligned version of the repo centers on:
+The current paper workflow centers on:
 
 - clean accuracy
 - PGD error
 - bound check rate
 - CROWN rate
 - attribution entropy
-- Attribution Drift Score
+- fixed-baseline Attribution Drift Score
+- worst-case Attribution Drift Score (WADS)
+- deletion/insertion faithfulness AUC
+
+TriGuard-Train additionally supports:
+
+- WADS regularization over a finite baseline family
+- local gradient-variation regularization
+- one-step adversarial consistency regularization
+- entropy-only and CE-only controls
 
 Appendix only workflows also support:
 
@@ -106,16 +115,36 @@ Run TriGuard-Train with baseline-adversarial attribution stabilization:
 bash scripts/09_run_triguard_train.sh
 ```
 
-Run a focused TriGuard-Train ablation:
+Run a focused TriGuard-Train ablation. By default this runs CIFAR-10 with `resnet50_imagenet` over:
+
+- CE only
+- entropy only
+- small WADS
+- WADS only
+- WADS + curvature
+- WADS + curvature + robust consistency
 
 ```bash
 bash scripts/10_run_triguard_train_ablation.sh
 ```
 
-Generate statistical summaries, Mann-Whitney tests, metric correlations, radar plots, and updated LaTeX tables:
+Generate statistical summaries, Mann-Whitney tests, metric correlations, radar plots, and updated LaTeX tables for the baseline workflow:
 
 ```bash
 bash scripts/08_run_stats_and_figures.sh
+```
+
+Generate artifacts for the baseline, TriGuard-Train, and TriGuard-Train ablation output directories:
+
+```bash
+bash scripts/11_make_triguard_train_artifacts.sh
+```
+
+All TriGuard-Train scripts accept environment overrides. For example:
+
+```bash
+SEEDS=0,1 DATASET=cifar100 MODEL=convnext_tiny_imagenet \
+  bash scripts/10_run_triguard_train_ablation.sh
 ```
 
 To generate a saliency panel for a trained checkpoint:
