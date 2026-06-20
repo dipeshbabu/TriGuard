@@ -17,7 +17,7 @@ from triguard.eval import (
     pgd_accuracy,
 )
 from triguard.models import get_model
-from triguard.models import uses_imagenet_preprocessing
+from triguard.models import split_model_name, uses_imagenet_preprocessing
 from triguard.plots import save_curve_plot
 from triguard.train import train_one_epoch
 
@@ -87,7 +87,8 @@ def maybe_compile(
         model = model.to(memory_format=torch.channels_last)
         # torch.compile can improve throughput, but it has been less reliable
         # than eager mode across our benchmark settings.
-        if enable_compile and hasattr(torch, "compile") and model_name.lower() not in {"vit_b_16", "vit"}:
+        base_model_name, _ = split_model_name(model_name)
+        if enable_compile and hasattr(torch, "compile") and base_model_name not in {"vit_b_16", "vit"}:
             model = torch.compile(model)
     return model
 
@@ -211,10 +212,12 @@ def train_with_early_stopping(
     patience: int = 3,
     min_delta: float = 1e-4,
     ckpt_path: str | None = None,
+    state_model=None,
 ):
     best = float("inf")
     bad = 0
     best_state = None
+    state_model = state_model or model
 
     for _ in range(epochs):
         loss = train_one_epoch(
@@ -234,14 +237,14 @@ def train_with_early_stopping(
             best = loss
             bad = 0
             best_state = {k: v.detach().cpu()
-                          for k, v in model.state_dict().items()}
+                          for k, v in state_model.state_dict().items()}
         else:
             bad += 1
             if bad >= patience:
                 break
 
     if best_state is not None:
-        model.load_state_dict(best_state)
+        state_model.load_state_dict(best_state)
         if ckpt_path is not None:
             os.makedirs(os.path.dirname(ckpt_path), exist_ok=True)
             torch.save(best_state, ckpt_path)
@@ -335,7 +338,7 @@ def run_one_setting(args, seed: int, ds: str, model_name: str, lam: float, devic
         )
 
     if args.load_ckpt:
-        state = torch.load(args.load_ckpt, map_location=device)
+        state = torch.load(args.load_ckpt, map_location=device, weights_only=True)
         eval_model.load_state_dict(state)
 
     if not args.eval_only:
@@ -354,6 +357,7 @@ def run_one_setting(args, seed: int, ds: str, model_name: str, lam: float, devic
             patience=args.patience,
             min_delta=args.min_delta,
             ckpt_path=ckpt_path,
+            state_model=eval_model,
         )
 
     eval_model.eval()

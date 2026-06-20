@@ -1,5 +1,4 @@
 import os
-from typing import Tuple
 
 import torch
 import torchvision
@@ -63,6 +62,8 @@ def get_dataset(
 ):
     name = name.lower()
     input_profile = input_profile.lower()
+    if input_profile not in {"native", "imagenet"}:
+        raise ValueError(f"Unknown input profile: {input_profile}")
     imagenet_profile = input_profile == "imagenet"
 
     if name == "mnist":

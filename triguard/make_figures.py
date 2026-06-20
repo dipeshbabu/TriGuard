@@ -60,7 +60,7 @@ def make_saliency_panel(args):
     )
     num_classes = int(meta["num_classes"])
     model = get_model(args.model, args.dataset, num_classes=num_classes).to(device)
-    state = torch.load(args.checkpoint, map_location=device)
+    state = torch.load(args.checkpoint, map_location=device, weights_only=True)
     model.load_state_dict(state)
     model.eval()
 
