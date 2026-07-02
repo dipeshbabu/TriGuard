@@ -18,13 +18,9 @@ _CIFAR_DOWNLOAD_TIMEOUT = float(os.environ.get("TRIGUARD_CIFAR_DOWNLOAD_TIMEOUT"
 _CIFAR_DOWNLOAD_RETRIES = max(1, int(os.environ.get("TRIGUARD_CIFAR_DOWNLOAD_RETRIES", "5")))
 _CIFAR_DOWNLOAD_CHUNK_BYTES = max(
     1024 * 1024,
-    int(os.environ.get("TRIGUARD_CIFAR_DOWNLOAD_CHUNK_MB", "4")) * 1024 * 1024,
+    int(os.environ.get("TRIGUARD_CIFAR_DOWNLOAD_CHUNK_MB", "1")) * 1024 * 1024,
 )
-_CIFAR_FALLBACK_URLS = {
-    "cifar-10-python.tar.gz": [
-        "https://storage.googleapis.com/tensorflow/tf-keras-datasets/cifar-10-batches-py.tar.gz",
-    ],
-}
+_CIFAR_FALLBACK_URLS = {}
 
 
 def _worker_count(requested: int | None = None) -> int:
@@ -123,8 +119,17 @@ def _download_archive(url: str, archive: Path, md5: str | None) -> None:
                     executor.submit(_download_range, url, start, end, part)
                     for start, end, part in ranges
                 ]
+                completed = 0
                 for future in as_completed(futures):
                     future.result()
+                    completed += 1
+                    if completed == 1 or completed == len(ranges) or completed % 10 == 0:
+                        downloaded_mb = min(completed * chunk_size, size) / (1024 * 1024)
+                        total_mb = size / (1024 * 1024)
+                        print(
+                            f"Downloaded {completed}/{len(ranges)} chunks "
+                            f"({downloaded_mb:.1f}/{total_mb:.1f} MB)"
+                        )
 
             with tmp_archive.open("wb") as output:
                 for _, _, part in ranges:
