@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 set -euo pipefail
+source "$(dirname "${BASH_SOURCE[0]}")/_activate_env.sh"
 
 # Set any block to 0 to skip it when resuming a partial rerun.
 RUN_PRETRAINED_GRID="${RUN_PRETRAINED_GRID:-1}"

@@ -4,7 +4,7 @@ set -euo pipefail
 PYTHON_VERSION="$(tr -d '[:space:]' < .python-version)"
 
 uv python install "$PYTHON_VERSION" --managed-python
-uv venv --python "$PYTHON_VERSION" --managed-python .triguard
+uv venv --python "$PYTHON_VERSION" --managed-python --allow-existing .triguard
 
 if [[ -x ".triguard/bin/python" ]]; then
   VENV_PYTHON=".triguard/bin/python"
@@ -15,6 +15,12 @@ elif [[ -x ".triguard/Scripts/python.exe" ]]; then
 else
   echo "Could not find the Python executable in .triguard" >&2
   return 1 2>/dev/null || exit 1
+fi
+
+ACTIVE_VERSION="$("$VENV_PYTHON" -c 'import sys; print(f"{sys.version_info.major}.{sys.version_info.minor}.{sys.version_info.micro}")')"
+if [[ "$ACTIVE_VERSION" != "$PYTHON_VERSION" ]]; then
+  echo "Recreating .triguard with Python $PYTHON_VERSION (found $ACTIVE_VERSION)." >&2
+  uv venv --python "$PYTHON_VERSION" --managed-python --clear .triguard
 fi
 
 source "$VENV_ACTIVATE"

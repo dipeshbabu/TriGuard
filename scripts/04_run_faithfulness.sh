@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 set -euo pipefail
+source "$(dirname "${BASH_SOURCE[0]}")/_activate_env.sh"
 
 python run_triguard.py \
   --mode faithfulness \

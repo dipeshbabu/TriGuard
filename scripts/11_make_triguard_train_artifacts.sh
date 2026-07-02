@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 set -euo pipefail
+source "$(dirname "${BASH_SOURCE[0]}")/_activate_env.sh"
 
 OUT_DIRS="${OUT_DIRS:-outputs/icml2026 outputs/icml2026_triguard_train_mainconf outputs/icml2026_triguard_train_ablation_mainconf}"
 

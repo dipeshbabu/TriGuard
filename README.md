@@ -10,7 +10,7 @@ This repo is locked to Python 3.10.x and pinned to 3.10.12 via `.python-version`
 bash scripts/00_install.sh
 ```
 
-After setup, follow the commands in the `Suggested workflow` section. Run `exit` to return to your previous shell.
+After setup, follow the commands in the `Suggested workflow` section. The workflow scripts automatically use `.triguard`, even if your current shell still points at another Python.
 
 ## Main outputs
 

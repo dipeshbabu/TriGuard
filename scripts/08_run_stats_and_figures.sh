@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 set -euo pipefail
+source "$(dirname "${BASH_SOURCE[0]}")/_activate_env.sh"
 
 OUT_DIR="${OUT_DIR:-outputs/icml2026}"
 LABEL_PREFIX="${LABEL_PREFIX:-$(basename "$OUT_DIR" | tr -c '[:alnum:]' '_')}"
