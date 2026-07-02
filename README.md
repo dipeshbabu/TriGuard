@@ -4,7 +4,7 @@ TriGuard is a practical evaluation toolkit for studying when prediction robustne
 
 ## Setup
 
-This repo is locked to Python 3.10.x and pinned to 3.10.12 via `.python-version`. Run one command to create the local `uv` environment and install dependencies:
+This repo is locked to Python 3.10.x and pinned to 3.10.12 via `.python-version`. Run one command to install the pinned `uv`-managed Python, create the local `.triguard` environment, and install dependencies:
 
 ```bash
 bash scripts/00_install.sh

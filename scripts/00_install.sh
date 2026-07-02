@@ -1,7 +1,10 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-uv venv --python 3.10.12 .triguard
+PYTHON_VERSION="$(tr -d '[:space:]' < .python-version)"
+
+uv python install "$PYTHON_VERSION" --managed-python
+uv venv --python "$PYTHON_VERSION" --managed-python .triguard
 
 if [[ -x ".triguard/bin/python" ]]; then
   VENV_PYTHON=".triguard/bin/python"
