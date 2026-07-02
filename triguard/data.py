@@ -1,12 +1,20 @@
 import os
+import shutil
+import urllib.error
+import urllib.request
+from concurrent.futures import ThreadPoolExecutor, as_completed
+from pathlib import Path
 
 import torch
 import torchvision
 import torchvision.transforms as T
 from torch.utils.data import DataLoader
+from torchvision.datasets.utils import check_integrity, extract_archive
 
 IMAGENET_MEAN = (0.485, 0.456, 0.406)
 IMAGENET_STD = (0.229, 0.224, 0.225)
+_CIFAR_DOWNLOAD_WORKERS = max(1, int(os.environ.get("TRIGUARD_CIFAR_DOWNLOAD_WORKERS", "8")))
+_CIFAR_DOWNLOAD_TIMEOUT = float(os.environ.get("TRIGUARD_CIFAR_DOWNLOAD_TIMEOUT", "30"))
 
 
 def _worker_count(requested: int | None = None) -> int:
@@ -14,6 +22,108 @@ def _worker_count(requested: int | None = None) -> int:
         return max(0, requested)
     cpu = os.cpu_count() or 0
     return min(4, cpu)
+
+
+def _probe_download(url: str) -> tuple[int | None, bool]:
+    length = None
+    try:
+        request = urllib.request.Request(url, method="HEAD")
+        with urllib.request.urlopen(request, timeout=_CIFAR_DOWNLOAD_TIMEOUT) as response:
+            length_header = response.headers.get("Content-Length")
+            length = int(length_header) if length_header else None
+            ranges = response.headers.get("Accept-Ranges", "")
+            if ranges.lower() == "bytes":
+                return length, True
+    except (OSError, urllib.error.URLError, ValueError):
+        pass
+
+    try:
+        request = urllib.request.Request(url, headers={"Range": "bytes=0-0"})
+        with urllib.request.urlopen(request, timeout=_CIFAR_DOWNLOAD_TIMEOUT) as response:
+            if response.status == 206:
+                content_range = response.headers.get("Content-Range", "")
+                if "/" in content_range:
+                    length = int(content_range.rsplit("/", 1)[1])
+                return length, True
+    except (OSError, urllib.error.URLError, ValueError):
+        pass
+    return length, False
+
+
+def _download_range(url: str, start: int, end: int, path: Path) -> None:
+    request = urllib.request.Request(url, headers={"Range": f"bytes={start}-{end}"})
+    with urllib.request.urlopen(request, timeout=_CIFAR_DOWNLOAD_TIMEOUT) as response:
+        if response.status != 206:
+            raise RuntimeError("server did not honor ranged download request")
+        with path.open("wb") as handle:
+            shutil.copyfileobj(response, handle)
+
+
+def _download_file(url: str, path: Path) -> None:
+    with urllib.request.urlopen(url, timeout=_CIFAR_DOWNLOAD_TIMEOUT) as response:
+        with path.open("wb") as handle:
+            shutil.copyfileobj(response, handle)
+
+
+def _download_archive(url: str, archive: Path, md5: str) -> None:
+    size, supports_ranges = _probe_download(url)
+    archive.parent.mkdir(parents=True, exist_ok=True)
+    tmp_archive = archive.with_name(f"{archive.name}.tmp")
+
+    if supports_ranges and size and _CIFAR_DOWNLOAD_WORKERS > 1:
+        part_dir = archive.with_name(f".{archive.name}.parts")
+        part_dir.mkdir(parents=True, exist_ok=True)
+        chunk_size = (size + _CIFAR_DOWNLOAD_WORKERS - 1) // _CIFAR_DOWNLOAD_WORKERS
+        ranges = []
+        for start in range(0, size, chunk_size):
+            end = min(start + chunk_size - 1, size - 1)
+            ranges.append((start, end, part_dir / f"{start}-{end}.part"))
+
+        try:
+            with ThreadPoolExecutor(max_workers=min(_CIFAR_DOWNLOAD_WORKERS, len(ranges))) as executor:
+                futures = [
+                    executor.submit(_download_range, url, start, end, part)
+                    for start, end, part in ranges
+                ]
+                for future in as_completed(futures):
+                    future.result()
+
+            with tmp_archive.open("wb") as output:
+                for _, _, part in ranges:
+                    with part.open("rb") as handle:
+                        shutil.copyfileobj(handle, output)
+        finally:
+            shutil.rmtree(part_dir, ignore_errors=True)
+    else:
+        _download_file(url, tmp_archive)
+
+    tmp_archive.replace(archive)
+    if not check_integrity(str(archive), md5):
+        archive.unlink(missing_ok=True)
+        raise RuntimeError(f"Downloaded archive failed integrity check: {archive}")
+
+
+def _prefetch_cifar_archive(dataset_cls, data_root: str, env_var: str) -> None:
+    root = Path(data_root)
+    archive = root / dataset_cls.filename
+    extracted = root / dataset_cls.base_folder
+
+    if extracted.exists():
+        return
+    if check_integrity(str(archive), dataset_cls.tgz_md5):
+        extract_archive(str(archive), str(root))
+        return
+
+    url = os.environ.get(env_var, dataset_cls.url)
+    print(
+        f"Prefetching {dataset_cls.filename} with {_CIFAR_DOWNLOAD_WORKERS} parallel workers "
+        f"from {url}"
+    )
+    try:
+        _download_archive(url, archive, dataset_cls.tgz_md5)
+        extract_archive(str(archive), str(root))
+    except Exception as exc:
+        print(f"Parallel CIFAR prefetch failed ({exc}); falling back to torchvision download.")
 
 
 def _imagenet_transform(train: bool, grayscale: bool):
@@ -118,6 +228,7 @@ def get_dataset(
             clamp_min, clamp_max = -1.0, 1.0
             eps = (8 / 255) / 0.5
             baseline_min, baseline_max = -1.0, 1.0
+        _prefetch_cifar_archive(torchvision.datasets.CIFAR10, data_root, "TRIGUARD_CIFAR10_URL")
         train = torchvision.datasets.CIFAR10(data_root, train=True, download=True, transform=train_tfm)
         test = torchvision.datasets.CIFAR10(data_root, train=False, download=True, transform=test_tfm)
         num_classes = 10
@@ -134,6 +245,7 @@ def get_dataset(
             std = (0.2675, 0.2565, 0.2761)
             train_tfm = _native_transform(train=True, mean=mean, std=std)
             test_tfm = _native_transform(train=False, mean=mean, std=std)
+        _prefetch_cifar_archive(torchvision.datasets.CIFAR100, data_root, "TRIGUARD_CIFAR100_URL")
         train = torchvision.datasets.CIFAR100(data_root, train=True, download=True, transform=train_tfm)
         test = torchvision.datasets.CIFAR100(data_root, train=False, download=True, transform=test_tfm)
         clamp_min, clamp_max, baseline_min, baseline_max = _norm_bounds(mean, std)
