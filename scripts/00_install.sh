@@ -1,10 +1,21 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-python -m pip install --upgrade pip
+uv venv --python 3.10.12 .triguard
 
-pip install torch==2.5.1 torchvision==0.20.1 torchaudio==2.5.1 --index-url https://download.pytorch.org/whl/cu121
+if [[ -x ".triguard/bin/python" ]]; then
+  VENV_PYTHON=".triguard/bin/python"
+elif [[ -x ".triguard/Scripts/python.exe" ]]; then
+  VENV_PYTHON=".triguard/Scripts/python.exe"
+else
+  echo "Could not find the Python executable in .triguard" >&2
+  exit 1
+fi
 
-pip install -r requirements.txt
+uv pip install --python "$VENV_PYTHON" \
+  torch==2.5.1 torchvision==0.20.1 torchaudio==2.5.1 \
+  --index-url https://download.pytorch.org/whl/cu121
 
-pip install ./auto_LiRPA
+uv pip install --python "$VENV_PYTHON" -r requirements.txt
+
+uv pip install --python "$VENV_PYTHON" ./auto_LiRPA
