@@ -14,7 +14,17 @@ from torchvision.datasets.utils import check_integrity, extract_archive
 IMAGENET_MEAN = (0.485, 0.456, 0.406)
 IMAGENET_STD = (0.229, 0.224, 0.225)
 _CIFAR_DOWNLOAD_WORKERS = max(1, int(os.environ.get("TRIGUARD_CIFAR_DOWNLOAD_WORKERS", "8")))
-_CIFAR_DOWNLOAD_TIMEOUT = float(os.environ.get("TRIGUARD_CIFAR_DOWNLOAD_TIMEOUT", "30"))
+_CIFAR_DOWNLOAD_TIMEOUT = float(os.environ.get("TRIGUARD_CIFAR_DOWNLOAD_TIMEOUT", "180"))
+_CIFAR_DOWNLOAD_RETRIES = max(1, int(os.environ.get("TRIGUARD_CIFAR_DOWNLOAD_RETRIES", "5")))
+_CIFAR_DOWNLOAD_CHUNK_BYTES = max(
+    1024 * 1024,
+    int(os.environ.get("TRIGUARD_CIFAR_DOWNLOAD_CHUNK_MB", "4")) * 1024 * 1024,
+)
+_CIFAR_FALLBACK_URLS = {
+    "cifar-10-python.tar.gz": [
+        "https://storage.googleapis.com/tensorflow/tf-keras-datasets/cifar-10-batches-py.tar.gz",
+    ],
+}
 
 
 def _worker_count(requested: int | None = None) -> int:
@@ -50,22 +60,50 @@ def _probe_download(url: str) -> tuple[int | None, bool]:
     return length, False
 
 
+def _candidate_cifar_urls(dataset_cls, env_var: str) -> list[str]:
+    urls = []
+    env_urls = os.environ.get(env_var, "")
+    urls.extend(url.strip() for url in env_urls.split(",") if url.strip())
+    urls.extend(_CIFAR_FALLBACK_URLS.get(dataset_cls.filename, []))
+    urls.append(dataset_cls.url)
+    return list(dict.fromkeys(urls))
+
+
 def _download_range(url: str, start: int, end: int, path: Path) -> None:
-    request = urllib.request.Request(url, headers={"Range": f"bytes={start}-{end}"})
-    with urllib.request.urlopen(request, timeout=_CIFAR_DOWNLOAD_TIMEOUT) as response:
-        if response.status != 206:
-            raise RuntimeError("server did not honor ranged download request")
-        with path.open("wb") as handle:
-            shutil.copyfileobj(response, handle)
+    path.unlink(missing_ok=True)
+    last_exc = None
+    for _ in range(_CIFAR_DOWNLOAD_RETRIES):
+        try:
+            request = urllib.request.Request(url, headers={"Range": f"bytes={start}-{end}"})
+            with urllib.request.urlopen(request, timeout=_CIFAR_DOWNLOAD_TIMEOUT) as response:
+                if response.status != 206:
+                    raise RuntimeError("server did not honor ranged download request")
+                with path.open("wb") as handle:
+                    shutil.copyfileobj(response, handle)
+            if path.stat().st_size == (end - start + 1):
+                return
+            raise RuntimeError(f"incomplete ranged download for bytes {start}-{end}")
+        except Exception as exc:
+            last_exc = exc
+            path.unlink(missing_ok=True)
+    raise RuntimeError(f"failed to download bytes {start}-{end}: {last_exc}")
 
 
 def _download_file(url: str, path: Path) -> None:
-    with urllib.request.urlopen(url, timeout=_CIFAR_DOWNLOAD_TIMEOUT) as response:
-        with path.open("wb") as handle:
-            shutil.copyfileobj(response, handle)
+    last_exc = None
+    for _ in range(_CIFAR_DOWNLOAD_RETRIES):
+        try:
+            with urllib.request.urlopen(url, timeout=_CIFAR_DOWNLOAD_TIMEOUT) as response:
+                with path.open("wb") as handle:
+                    shutil.copyfileobj(response, handle)
+            return
+        except Exception as exc:
+            last_exc = exc
+            path.unlink(missing_ok=True)
+    raise RuntimeError(f"failed to download archive: {last_exc}")
 
 
-def _download_archive(url: str, archive: Path, md5: str) -> None:
+def _download_archive(url: str, archive: Path, md5: str | None) -> None:
     size, supports_ranges = _probe_download(url)
     archive.parent.mkdir(parents=True, exist_ok=True)
     tmp_archive = archive.with_name(f"{archive.name}.tmp")
@@ -73,7 +111,7 @@ def _download_archive(url: str, archive: Path, md5: str) -> None:
     if supports_ranges and size and _CIFAR_DOWNLOAD_WORKERS > 1:
         part_dir = archive.with_name(f".{archive.name}.parts")
         part_dir.mkdir(parents=True, exist_ok=True)
-        chunk_size = (size + _CIFAR_DOWNLOAD_WORKERS - 1) // _CIFAR_DOWNLOAD_WORKERS
+        chunk_size = _CIFAR_DOWNLOAD_CHUNK_BYTES
         ranges = []
         for start in range(0, size, chunk_size):
             end = min(start + chunk_size - 1, size - 1)
@@ -98,9 +136,15 @@ def _download_archive(url: str, archive: Path, md5: str) -> None:
         _download_file(url, tmp_archive)
 
     tmp_archive.replace(archive)
-    if not check_integrity(str(archive), md5):
+    if md5 is not None and not check_integrity(str(archive), md5):
         archive.unlink(missing_ok=True)
         raise RuntimeError(f"Downloaded archive failed integrity check: {archive}")
+
+
+def _check_extracted_cifar(dataset_cls, root: Path) -> bool:
+    base = root / dataset_cls.base_folder
+    checks = getattr(dataset_cls, "train_list", []) + getattr(dataset_cls, "test_list", [])
+    return bool(checks) and all(check_integrity(str(base / name), md5) for name, md5 in checks)
 
 
 def _prefetch_cifar_archive(dataset_cls, data_root: str, env_var: str) -> None:
@@ -108,22 +152,28 @@ def _prefetch_cifar_archive(dataset_cls, data_root: str, env_var: str) -> None:
     archive = root / dataset_cls.filename
     extracted = root / dataset_cls.base_folder
 
-    if extracted.exists():
+    if extracted.exists() and _check_extracted_cifar(dataset_cls, root):
         return
     if check_integrity(str(archive), dataset_cls.tgz_md5):
         extract_archive(str(archive), str(root))
         return
 
-    url = os.environ.get(env_var, dataset_cls.url)
-    print(
-        f"Prefetching {dataset_cls.filename} with {_CIFAR_DOWNLOAD_WORKERS} parallel workers "
-        f"from {url}"
-    )
-    try:
-        _download_archive(url, archive, dataset_cls.tgz_md5)
-        extract_archive(str(archive), str(root))
-    except Exception as exc:
-        print(f"Parallel CIFAR prefetch failed ({exc}); falling back to torchvision download.")
+    for url in _candidate_cifar_urls(dataset_cls, env_var):
+        print(
+            f"Prefetching {dataset_cls.filename} with {_CIFAR_DOWNLOAD_WORKERS} workers "
+            f"from {url}"
+        )
+        try:
+            archive_md5 = dataset_cls.tgz_md5 if url == dataset_cls.url else None
+            _download_archive(url, archive, archive_md5)
+            extract_archive(str(archive), str(root))
+            if not _check_extracted_cifar(dataset_cls, root):
+                shutil.rmtree(extracted, ignore_errors=True)
+                raise RuntimeError("extracted CIFAR files failed integrity check")
+            return
+        except Exception as exc:
+            print(f"CIFAR prefetch failed from {url}: {exc}")
+    print("All CIFAR prefetch attempts failed; falling back to torchvision download.")
 
 
 def _imagenet_transform(train: bool, grayscale: bool):
