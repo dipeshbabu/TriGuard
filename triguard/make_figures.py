@@ -8,18 +8,29 @@ from .attacks import pgd_linf
 from .attributions import blurred_baseline, integrated_gradients
 from .data import get_dataset
 from .models import get_model, uses_imagenet_preprocessing
-from .plots import save_correlation_heatmap, save_radar_plot, save_saliency_panel
+from .plots import save_correlation_heatmap, save_saliency_panel, save_tradeoff_plot
+from .protocol import validate_protocol_values
 
 
-RADAR_METRICS = [
-    "clean_acc",
-    "adv_error",
-    "bound_check_rate",
-    "entropy_mean",
-    "ads_mean",
-    "wads_mean",
-    "pp_stability_l2_mean",
-    "pp_stability_topk_jaccard_mean",
+CONFIG_COLUMNS = [
+    "condition_hash",
+    "code_hash",
+    "lambda_entropy",
+    "lambda_wads",
+    "lambda_rar",
+    "lambda_far",
+    "lambda_curvature",
+    "lambda_robust",
+    "lambda_attr_mass",
+    "reference_risk",
+    "reference_cvar_alpha",
+    "reference_distance",
+    "reference_bank_samples",
+    "eval_reference_bank_samples",
+    "training_reservation_hash",
+    "reference_bank_hash",
+    "heldout_reference_bank_hash",
+    "attack_suite",
 ]
 
 
@@ -37,24 +48,61 @@ def make_aggregate_figures(out_dir):
 
     if os.path.exists(corr_csv):
         corr_df = pd.read_csv(corr_csv)
-        save_correlation_heatmap(
-            corr_df,
-            "Spearman correlation among TriGuard metrics",
-            os.path.join(fig_dir, "metric_correlation_heatmap.png"),
-        )
+        if "dataset" in corr_df.columns:
+            for dataset, group in corr_df.groupby("dataset", dropna=False):
+                save_correlation_heatmap(
+                    group,
+                    f"Spearman correlation: {dataset}",
+                    os.path.join(fig_dir, f"metric_correlation_{dataset}.png"),
+                )
+        else:
+            save_correlation_heatmap(
+                corr_df,
+                "Spearman correlation among TriGuard metrics",
+                os.path.join(fig_dir, "metric_correlation_heatmap.png"),
+            )
 
     if os.path.exists(main_csv):
         main_df = pd.read_csv(main_csv)
-        metrics = [m for m in RADAR_METRICS if m in main_df.columns]
-        group = main_df.groupby(["dataset", "model"], as_index=False)[metrics].mean(numeric_only=True)
-        for dataset in sorted(group["dataset"].unique()):
-            save_radar_plot(
-                group,
-                dataset,
-                metrics,
-                f"{dataset} metric profile",
-                os.path.join(fig_dir, f"radar_{dataset}.png"),
+        validate_protocol_values(main_df["protocol_version"], main_csv)
+        config = [column for column in CONFIG_COLUMNS if column in main_df.columns]
+        group_cols = ["dataset", "model", *config]
+        metrics = [
+            metric
+            for metric in ["clean_acc", "wads_mean", "heldout_wads_mean"]
+            if metric in main_df.columns
+        ]
+        group = main_df.groupby(group_cols, dropna=False, as_index=False)[
+            metrics
+        ].mean(numeric_only=True)
+        group["series"] = group.apply(
+            lambda row: (
+                f"{row['model']}|risk={row.get('reference_risk', 'n/a')}"
+                f"|w={row.get('lambda_wads', 0):.3g}"
+                f"|curv={row.get('lambda_curvature', 0):.3g}"
+                f"|rob={row.get('lambda_robust', 0):.3g}"
+                f"|mass={row.get('lambda_attr_mass', 0):.3g}"
+            ),
+            axis=1,
+        )
+        for dataset, dataset_group in group.groupby("dataset", dropna=False):
+            save_tradeoff_plot(
+                dataset_group,
+                "clean_acc",
+                "wads_mean",
+                f"{dataset}: accuracy versus reference risk",
+                os.path.join(fig_dir, f"tradeoff_wads_{dataset}.png"),
             )
+            if "heldout_wads_mean" in dataset_group.columns:
+                save_tradeoff_plot(
+                    dataset_group,
+                    "clean_acc",
+                    "heldout_wads_mean",
+                    f"{dataset}: accuracy versus held-out reference risk",
+                    os.path.join(
+                        fig_dir, f"tradeoff_heldout_wads_{dataset}.png"
+                    ),
+                )
 
 
 def _collapse_attr(attr):

@@ -4,6 +4,7 @@ source "$(dirname "${BASH_SOURCE[0]}")/_activate_env.sh"
 
 python run_triguard.py \
   --mode baseline \
+  --target_mode pred \
   --out outputs/icml2026 \
   --seed 0 \
   --dataset cifar10 \

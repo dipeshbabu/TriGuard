@@ -1,0 +1,56 @@
+name: scientific-ci
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  scientific-invariants:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@9f698171ed81b15d1823a05fc7211befd50c8ae0 # v6.0.3
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
+        with:
+          python-version: "3.10.12"
+          cache: pip
+      - name: Install test dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install torch==2.5.1 torchvision==0.20.1 --index-url https://download.pytorch.org/whl/cpu
+          python -m pip install -r requirements.txt -r requirements-dev.txt
+          python -m pip install setuptools wheel ./auto_LiRPA -r requirements-autoattack.txt
+          python -m pip check
+      - name: Lint research code
+        run: python -m ruff check run_triguard.py triguard tests
+      - name: Compile research code
+        run: python -m compileall -q run_triguard.py triguard tests
+      - name: Validate workflow scripts
+        run: bash -n scripts/*.sh
+      - name: Test scientific invariants
+        run: python -m unittest discover -s tests -v
+      - name: Smoke-test optional research dependencies
+        run: |
+          python - <<'PY'
+          import torch
+          import autoattack
+          from triguard.verify import crown_ibp_certify
+
+          model = torch.nn.Sequential(torch.nn.Flatten(), torch.nn.Linear(4, 2))
+          sample = torch.zeros(1, 2, 2)
+          certified, status = crown_ibp_certify(
+              model,
+              sample,
+              0,
+              0.01,
+              torch.device("cpu"),
+              return_status=True,
+              clamp_min=0.0,
+              clamp_max=1.0,
+          )
+          assert status == "ok"
+          assert isinstance(certified, bool)
+          PY

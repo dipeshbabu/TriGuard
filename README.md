@@ -1,6 +1,10 @@
-# TriGuard: Testing Model Safety with Attribution Entropy, Verification, and Drift
+# TriGuard: reference-distribution robustness for Integrated Gradients
 
-TriGuard is a practical evaluation toolkit for studying when prediction robustness, certification aware checks, and explanation stability disagree in image classifiers.
+TriGuard studies how Integrated Gradients changes when its reference changes. It separates the constant component forced by completeness from the remaining allocation drift, then trains against the upper tail of drift over a reference distribution.
+
+This repository is a frontier candidate, not a finished empirical result. The method, theory, and protocol are implemented; the protocol-v2.2 experiments still need to be run. The paper deliberately contains no numerical claims from old or simulated outputs.
+
+TriGuard does not produce a safety score. Zero, blur, noise, uniform, and midpoint references are a synthetic stress test. Optional reference banks use real images selected for neutral predictions by a frozen calibration model, but that still does not establish domain-semantic missingness.
 
 ## Setup
 
@@ -11,32 +15,53 @@ bash scripts/00_install.sh
 ```
 
 After setup, follow the commands in the `Suggested workflow` section. The workflow scripts automatically use `.triguard`, even if your current shell still points at another Python.
+The installer defaults to CUDA 12.1 PyTorch wheels. For a CPU-only machine, run
+`TORCH_INDEX_URL=https://download.pytorch.org/whl/cpu bash scripts/00_install.sh`.
+
+## Validation
+
+From the repository root with `.triguard` activated:
+
+```bash
+python -m ruff check run_triguard.py triguard tests
+python -m compileall -q run_triguard.py triguard tests
+python -m unittest discover -s tests -v
+bash -n scripts/*.sh
+```
 
 ## Main outputs
 
 The current paper workflow centers on:
 
 - clean accuracy
-- PGD error
-- bound check rate
-- CROWN rate
-- attribution entropy
-- fixed-baseline Attribution Drift Score
-- worst-case Attribution Drift Score (WADS)
+- five-restart PGD error or standard AutoAttack in pixel coordinates
+- empirical random-probe violation rate and worst margin (not a certificate)
+- unconditional CROWN proven rate, conditional valid-call rate, and error taxonomy
+- normalized pixel-level attribution entropy
+- fixed-reference allocation ADS: signed L1 distance after absolute-mass normalization
+- allocation WADS: the per-sample worst ADS over the finite reference family
+- raw RMS drift, completeness-orthogonal RMS drift, and baseline-output gaps
+- relative attribution-mass ratio tails and floor-violation rate, plus raw-mass diagnostics
+- absolute and relative Integrated Gradients completeness error over every reference
+- held-out reference-bank WADS and completeness-orthogonal drift
+- held-out relative mass-ratio tails and floor-violation rate
 - prediction-preserving attribution stability under small image transforms
-- deletion/insertion faithfulness AUC
+- same-checkpoint deletion/insertion faithfulness AUC with a random-ranking control
 - train, evaluation, and total runtime
 
-TriGuard-Train additionally supports:
+TriGuard-Train supports:
 
-- WADS regularization over a finite baseline family
+- mean, CVaR, or maximum risk over reference pairs
+- calibration-relative in-distribution reference banks and disjoint held-out banks
+- a scale-invariant attribution-mass floor against near-zero-map collapse
 - RAR-like fixed-baseline adversarial attribution regularization
 - FAR-like fixed-baseline local attribution regularization
 - local gradient-variation regularization
 - one-step adversarial consistency regularization
 - entropy-only and CE-only controls
+- sampled reference pairs for larger banks
 
-Appendix only workflows also support:
+Additional workflows also support:
 
 - baseline sensitivity for Attribution Drift Score
 - faithfulness via deletion and insertion AUC
@@ -62,7 +87,7 @@ The upgraded grid adds ImageNet initialized models for the CIFAR settings:
 
 ## Suggested workflow
 
-The default training policy is dataset-aware: MNIST and FashionMNIST use 5 epochs by default, CIFAR10 uses 10, and CIFAR100 uses 15 unless you override `--epochs`.
+The primary protocol uses fixed epochs, not training-loss early stopping. MNIST and FashionMNIST use 5 epochs by default, CIFAR-10 uses 10, and CIFAR-100 uses 15 unless `--epochs` overrides the budget.
 
 Run the main benchmark with multiple seeds:
 
@@ -96,7 +121,7 @@ bash scripts/05_make_tables.sh
 
 ## Upgraded paper workflow
 
-For a stronger paper, run the pretrained grid with five seeds:
+Run the pretrained architecture grid as a secondary breadth analysis:
 
 ```bash
 bash scripts/06_run_pretrained_grid.sh
@@ -108,32 +133,56 @@ Run a separate certification sweep on a CROWN-friendly MNIST/SimpleCNN setting w
 bash scripts/07_run_certification_sweep.sh
 ```
 
-Run TriGuard-Train with baseline-adversarial attribution stabilization:
+First reserve a model-independent candidate pool. The same pool is excluded
+from calibration training and every compared classifier:
+
+```bash
+bash scripts/11_reserve_reference_candidates.sh
+```
+
+Then build disjoint reference banks from a frozen target-task checkpoint that
+was trained with `--exclude_train_indices_file` pointing to that reservation:
+
+```bash
+CHECKPOINT=outputs/icml2026_calibration/checkpoints/main_cifar10_resnet50_imagenet_seed0_lam0.000.pt \
+  CANDIDATE_INDICES=reference_banks/mainconf/cifar10_resnet50_imagenet_candidates.pt \
+  bash scripts/11_build_reference_banks.sh
+```
+
+Run the focused twenty-seed primary TriGuard-Train comparison. Set `REFERENCE_BANK` and
+`HELDOUT_REFERENCE_BANK` to include the calibration-relative bank protocol. Bank draws
+are without replacement, with four references per training example and sixteen
+per evaluation example:
 
 ```bash
 bash scripts/09_run_triguard_train.sh
 ```
 
-Run a focused TriGuard-Train ablation. By default this runs CIFAR-10 with `resnet50_imagenet` over:
+Run a ten-seed secondary TriGuard-Train ablation. By default this runs CIFAR-10 with `resnet50_imagenet` over:
 
 - CE only
 - entropy only
 - RAR-like fixed-baseline attribution regularization
 - FAR-like fixed-baseline attribution regularization
 - small WADS
+- mean reference-pair risk
 - WADS only
 - WADS + curvature
 - WADS + curvature + robust consistency
+- CVaR reference risk + curvature + robust consistency
+- CVaR reference risk + curvature + robust consistency + mass floor
 
 ```bash
 bash scripts/10_run_triguard_train_ablation.sh
 ```
 
-Generate statistical summaries, Mann-Whitney tests, metric correlations, radar plots, and updated LaTeX tables for the baseline workflow:
+Generate statistical summaries, paired tests, per-dataset correlations, accuracy--risk tradeoff plots, and LaTeX tables:
 
 ```bash
 bash scripts/08_run_stats_and_figures.sh
 ```
+
+For ablations, the statistics workflow writes `regularizer_paired_tests.csv`. The focused primary run also isolates the two prespecified held-out-WADS contrasts in `primary_paired_tests.csv`; accuracy, adversarial-error, held-out mass-floor, and same-checkpoint faithfulness guardrails are evaluated in `primary_decisions.csv`. `design_sensitivity.csv` records the planning approximation for the matched-seed count actually present. Architecture comparisons remain secondary and are written to `mannwhitney_tests.csv`.
 
 Generate artifacts for the baseline, TriGuard-Train, and TriGuard-Train ablation output directories:
 
@@ -147,10 +196,15 @@ Run the full main-conference rerun sequence:
 bash scripts/12_run_mainconf_workflow.sh
 ```
 
-This runs the pretrained grid, certification sweep, TriGuard-Train run, TriGuard-Train ablation, and artifact generation. To resume a partial run, set any block flag to `0`, for example:
+This creates the reservation, trains the leakage-free calibration checkpoint,
+runs the pretrained grid and certification sweep, builds the reference banks,
+then runs the focused training comparison, ablation, and artifact generation.
+To resume a partial run, set any block flag to `0`, for example:
 
 ```bash
-RUN_PRETRAINED_GRID=0 RUN_CERT_SWEEP=0 bash scripts/12_run_mainconf_workflow.sh
+RUN_RESERVATION=0 RUN_CALIBRATION=0 RUN_PRETRAINED_GRID=0 \
+  RUN_CERT_SWEEP=0 RUN_REFERENCE_BANK=0 \
+  bash scripts/12_run_mainconf_workflow.sh
 ```
 
 All TriGuard-Train scripts accept environment overrides. For example:
@@ -160,11 +214,19 @@ SEEDS=0,1 DATASET=cifar100 MODEL=convnext_tiny_imagenet \
   bash scripts/10_run_triguard_train_ablation.sh
 ```
 
-The upgraded training scripts write to `outputs/icml2026_triguard_train_mainconf` and
+The training scripts write to `outputs/icml2026_triguard_train_mainconf` and
 `outputs/icml2026_triguard_train_ablation_mainconf` by default. Reuse an old output
-directory only if its CSV headers match the current schema; otherwise start a new
-directory so runtime, RAR/FAR, and prediction-preserving stability columns are not
-mixed with older results.
+directory only if its CSV headers match the current schema. Each row has a
+unique run hash, a seed-independent condition hash, and a treatment-independent
+comparison hash. Duplicate run identities are rejected, and `manifests/`
+records arguments, artifact hashes, package versions, hardware, and Git state.
+Every saved checkpoint also receives a content-hashed `.meta.json` sidecar.
+
+Protocol-v2.2 outputs are intentionally incompatible with earlier CSVs, including the older raw-L2-only files under `outputs/`. The analysis and table builders reject mixed or stale protocol versions, and each run identity includes a scientific source-tree hash, so use a fresh output directory. Attribution evaluation explains the predicted class by default; pass `--target_mode truth` only for an explicitly label-conditioned analysis.
+
+The old notebook and legacy manuscript figures live under `archive/` and
+`paper/archive/`. They contain simulated or obsolete material and are not
+experimental evidence.
 
 To generate a saliency panel for a trained checkpoint:
 
@@ -173,7 +235,7 @@ python -m triguard.make_figures \
   --mode saliency \
   --dataset cifar10 \
   --model vit_b_16_imagenet \
-  --checkpoint outputs/icml2026/checkpoints/main_cifar10_vit_b_16_imagenet_seed0_lam0.000.pt
+  --checkpoint outputs/icml2026/checkpoints/<checkpoint-with-config-hash>.pt
 ```
 
 ## Acknowledgement

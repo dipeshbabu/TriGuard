@@ -51,41 +51,28 @@ def save_correlation_heatmap(corr_df, title, outpath):
     plt.close()
 
 
-def save_radar_plot(group_df, dataset, metrics, title, outpath):
+def save_tradeoff_plot(df, x_metric, y_metric, title, outpath):
     os.makedirs(os.path.dirname(outpath), exist_ok=True)
-    df = group_df[group_df["dataset"] == dataset].copy()
-    if df.empty:
+    active = df.dropna(subset=[x_metric, y_metric]).copy()
+    if active.empty:
         return
-
-    values = df[metrics].astype(float)
-    norm = values.copy()
-    for metric in metrics:
-        lo = values[metric].min()
-        hi = values[metric].max()
-        if hi == lo:
-            norm[metric] = 0.5
-        else:
-            norm[metric] = (values[metric] - lo) / (hi - lo)
-
-    angles = np.linspace(0, 2 * np.pi, len(metrics), endpoint=False).tolist()
-    angles += angles[:1]
-
-    fig = plt.figure(figsize=(7, 6))
-    ax = fig.add_subplot(111, polar=True)
-    for row_idx, row in df.reset_index(drop=True).iterrows():
-        vals = norm.iloc[row_idx].tolist()
-        vals += vals[:1]
-        ax.plot(angles, vals, linewidth=1.8, label=row["model"])
-        ax.fill(angles, vals, alpha=0.08)
-
-    ax.set_xticks(angles[:-1])
-    ax.set_xticklabels(metrics)
-    ax.set_yticklabels([])
+    fig, ax = plt.subplots(figsize=(7, 5))
+    ax.scatter(active[x_metric], active[y_metric], s=40, alpha=0.85)
+    for _, row in active.iterrows():
+        ax.annotate(
+            str(row["series"]),
+            (row[x_metric], row[y_metric]),
+            xytext=(4, 4),
+            textcoords="offset points",
+            fontsize=7,
+        )
+    ax.set_xlabel(x_metric)
+    ax.set_ylabel(y_metric)
     ax.set_title(title)
-    ax.legend(loc="upper right", bbox_to_anchor=(1.35, 1.15), fontsize=8)
-    plt.tight_layout()
-    plt.savefig(outpath, dpi=200)
-    plt.close()
+    ax.grid(alpha=0.2)
+    fig.tight_layout()
+    fig.savefig(outpath, dpi=220)
+    plt.close(fig)
 
 
 def _to_image(arr):

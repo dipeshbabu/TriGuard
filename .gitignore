@@ -9,6 +9,8 @@ __pycache__/
 .venv/
 venv/
 env/
+# Dependencies are pinned by requirements files and scripts/00_install.sh.
+uv.lock
 
 # Test and notebook artifacts
 .pytest_cache/
@@ -16,9 +18,24 @@ env/
 
 # Local editor settings
 .vscode/
+.ssh/
 
 # Experiment outputs
+data/
 outputs/
+reference_banks/
 checkpoints/
 runs/
 logs/
+
+# Local LaTeX build products
+paper/*.aux
+paper/*.bbl
+paper/*.blg
+paper/*.fdb_latexmk
+paper/*.fls
+paper/*.log
+paper/*.out
+paper/main.pdf
+paper/icml_numpapers.pdf
+paper/archive/*.pdf

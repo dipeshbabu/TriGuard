@@ -2,6 +2,7 @@
 set -euo pipefail
 
 PYTHON_VERSION="$(tr -d '[:space:]' < .python-version)"
+TORCH_INDEX_URL="${TORCH_INDEX_URL:-https://download.pytorch.org/whl/cu121}"
 
 uv python install "$PYTHON_VERSION" --managed-python
 uv venv --python "$PYTHON_VERSION" --managed-python --allow-existing .triguard
@@ -29,11 +30,14 @@ uv pip install --python "$VENV_PYTHON" setuptools wheel
 
 uv pip install --python "$VENV_PYTHON" \
   torch==2.5.1 torchvision==0.20.1 torchaudio==2.5.1 \
-  --index-url https://download.pytorch.org/whl/cu121
+  --index-url "$TORCH_INDEX_URL"
 
 uv pip install --python "$VENV_PYTHON" -r requirements.txt
 
 uv pip install --python "$VENV_PYTHON" ./auto_LiRPA
+uv pip install --python "$VENV_PYTHON" -r requirements-autoattack.txt
+uv pip install --python "$VENV_PYTHON" -r requirements-dev.txt
+uv pip check --python "$VENV_PYTHON"
 
 if [[ "${BASH_SOURCE[0]}" != "$0" ]]; then
   echo "Setup complete. Activated: $VIRTUAL_ENV"

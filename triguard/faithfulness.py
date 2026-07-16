@@ -26,7 +26,10 @@ def deletion_insertion_curve(model, x, target, attr, mode, steps=50, baseline=No
     H = x0.size(-2)
     W = x0.size(-1)
     total = H * W
-    k_per = max(total // steps, 1)
+    steps = max(int(steps), 1)
+    boundaries = torch.linspace(
+        0, total, steps + 1, device=order.device
+    ).round().to(dtype=torch.long)
 
     if mode == "deletion":
         cur = x0.clone()
@@ -44,7 +47,7 @@ def deletion_insertion_curve(model, x, target, attr, mode, steps=50, baseline=No
         if t == steps:
             break
 
-        idx = order[t*k_per: min((t+1)*k_per, total)]
+        idx = order[boundaries[t]:boundaries[t + 1]]
         h = (idx // W).long()
         w = (idx % W).long()
 

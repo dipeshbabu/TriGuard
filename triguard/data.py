@@ -8,7 +8,7 @@ from pathlib import Path
 import torch
 import torchvision
 import torchvision.transforms as T
-from torch.utils.data import DataLoader
+from torch.utils.data import DataLoader, Subset
 from torchvision.datasets.utils import check_integrity, extract_archive
 
 IMAGENET_MEAN = (0.485, 0.456, 0.406)
@@ -188,8 +188,7 @@ def _imagenet_transform(train: bool, grayscale: bool):
     if train:
         steps.extend(
             [
-                T.Resize(256),
-                T.RandomCrop(224, padding=4),
+                T.RandomResizedCrop(224, scale=(0.8, 1.0)),
                 T.RandomHorizontalFlip(),
             ]
         )
@@ -200,9 +199,9 @@ def _imagenet_transform(train: bool, grayscale: bool):
 
 
 def _native_transform(train: bool, mean=None, std=None):
-    # Keep the original workshop preprocessing unchanged. Stronger augmentation
-    # is only used by the ImageNet-pretrained profile.
     steps = []
+    if train:
+        steps.extend([T.RandomCrop(32, padding=4), T.RandomHorizontalFlip()])
     steps.append(T.ToTensor())
     if mean is not None and std is not None:
         steps.append(T.Normalize(mean, std))
@@ -210,8 +209,10 @@ def _native_transform(train: bool, mean=None, std=None):
 
 
 def _norm_bounds(mean, std):
-    clamp_min = min((0.0 - m) / s for m, s in zip(mean, std))
-    clamp_max = max((1.0 - m) / s for m, s in zip(mean, std))
+    # Normalization produces a different valid interval for every channel.
+    # Collapsing these to global scalar extrema admits invalid RGB values.
+    clamp_min = tuple((0.0 - m) / s for m, s in zip(mean, std))
+    clamp_max = tuple((1.0 - m) / s for m, s in zip(mean, std))
     baseline_min, baseline_max = clamp_min, clamp_max
     return clamp_min, clamp_max, baseline_min, baseline_max
 
@@ -230,9 +231,12 @@ def get_dataset(
     if input_profile not in {"native", "imagenet"}:
         raise ValueError(f"Unknown input profile: {input_profile}")
     imagenet_profile = input_profile == "imagenet"
+    normalization_mean = (0.0,)
+    normalization_std = (1.0,)
 
     if name == "mnist":
         if imagenet_profile:
+            normalization_mean, normalization_std = IMAGENET_MEAN, IMAGENET_STD
             train_tfm = _imagenet_transform(train=True, grayscale=True)
             test_tfm = _imagenet_transform(train=False, grayscale=True)
             clamp_min, clamp_max, baseline_min, baseline_max = _norm_bounds(
@@ -251,6 +255,7 @@ def get_dataset(
 
     elif name == "fashionmnist":
         if imagenet_profile:
+            normalization_mean, normalization_std = IMAGENET_MEAN, IMAGENET_STD
             train_tfm = _imagenet_transform(train=True, grayscale=True)
             test_tfm = _imagenet_transform(train=False, grayscale=True)
             clamp_min, clamp_max, baseline_min, baseline_max = _norm_bounds(
@@ -269,6 +274,7 @@ def get_dataset(
 
     elif name == "cifar10":
         if imagenet_profile:
+            normalization_mean, normalization_std = IMAGENET_MEAN, IMAGENET_STD
             train_tfm = _imagenet_transform(train=True, grayscale=False)
             test_tfm = _imagenet_transform(train=False, grayscale=False)
             clamp_min, clamp_max, baseline_min, baseline_max = _norm_bounds(
@@ -278,6 +284,7 @@ def get_dataset(
         else:
             mean = (0.5, 0.5, 0.5)
             std = (0.5, 0.5, 0.5)
+            normalization_mean, normalization_std = mean, std
             train_tfm = _native_transform(train=True, mean=mean, std=std)
             test_tfm = _native_transform(train=False, mean=mean, std=std)
             clamp_min, clamp_max = -1.0, 1.0
@@ -300,6 +307,7 @@ def get_dataset(
             std = (0.2675, 0.2565, 0.2761)
             train_tfm = _native_transform(train=True, mean=mean, std=std)
             test_tfm = _native_transform(train=False, mean=mean, std=std)
+        normalization_mean, normalization_std = mean, std
         _prefetch_cifar_archive(torchvision.datasets.CIFAR100, data_root, "TRIGUARD_CIFAR100_URL")
         train = torchvision.datasets.CIFAR100(data_root, train=True, download=True, transform=train_tfm)
         test = torchvision.datasets.CIFAR100(data_root, train=False, download=True, transform=test_tfm)
@@ -317,6 +325,8 @@ def get_dataset(
         "baseline_max": baseline_max,
         "input_profile": input_profile,
         "pixel_eps": pixel_eps,
+        "normalization_mean": normalization_mean,
+        "normalization_std": normalization_std,
     }
     return train, test, clamp_min, clamp_max, eps, meta
 
@@ -328,6 +338,8 @@ def get_loaders(
     num_workers: int | None = None,
     data_root: str = "./data",
     input_profile: str = "native",
+    exclude_train_indices=None,
+    seed: int = 0,
 ):
     train, test, clamp_min, clamp_max, eps, meta = get_dataset(
         name,
@@ -336,6 +348,16 @@ def get_loaders(
     )
     workers = _worker_count(num_workers)
     pin = torch.cuda.is_available()
+    excluded = sorted(set(int(index) for index in (exclude_train_indices or [])))
+    if excluded:
+        if excluded[0] < 0 or excluded[-1] >= len(train):
+            raise ValueError("Reserved reference index lies outside the training set.")
+        excluded_set = set(excluded)
+        train = Subset(
+            train, [index for index in range(len(train)) if index not in excluded_set]
+        )
+    meta["excluded_reference_n"] = len(excluded)
+    train_generator = torch.Generator().manual_seed(int(seed))
 
     train_loader = DataLoader(
         train,
@@ -344,6 +366,7 @@ def get_loaders(
         num_workers=workers,
         pin_memory=pin,
         persistent_workers=(workers > 0),
+        generator=train_generator,
     )
     test_loader = DataLoader(
         test,

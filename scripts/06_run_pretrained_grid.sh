@@ -4,6 +4,7 @@ source "$(dirname "${BASH_SOURCE[0]}")/_activate_env.sh"
 
 python run_triguard.py \
   --mode main \
+  --target_mode pred \
   --grid pretrained \
   --seeds 0,1,2,3,4 \
   --lambda_entropy 0.0 \

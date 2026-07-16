@@ -102,18 +102,23 @@ def get_model(name: str, dataset: str, num_classes: int = 10):
         weights = ResNet50_Weights.IMAGENET1K_V2 if pretrained else None
         model = resnet50(weights=weights)
         model.fc = nn.Linear(model.fc.in_features, num_classes)
-        if grayscale and not pretrained:
+        if not pretrained:
+            input_channels = 1 if grayscale else 3
             model.conv1 = nn.Conv2d(
-                1, 64, kernel_size=7, stride=2, padding=3, bias=False)
+                input_channels, 64, kernel_size=3, stride=1, padding=1, bias=False
+            )
+            model.maxpool = nn.Identity()
         return model
 
     if name == "densenet121":
         weights = DenseNet121_Weights.IMAGENET1K_V1 if pretrained else None
         model = densenet121(weights=weights)
         model.classifier = nn.Linear(model.classifier.in_features, num_classes)
-        if grayscale and not pretrained:
+        if not pretrained:
+            input_channels = 1 if grayscale else 3
             model.features.conv0 = nn.Conv2d(
-                1, 64, kernel_size=3, stride=1, padding=1, bias=False)
+                input_channels, 64, kernel_size=3, stride=1, padding=1, bias=False
+            )
             model.features.pool0 = nn.Identity()
         return model
 
