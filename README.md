@@ -2,7 +2,7 @@
 
 TriGuard studies how Integrated Gradients changes when its reference changes. It separates the constant component forced by completeness from the remaining allocation drift, then trains against the upper tail of drift over a reference distribution.
 
-This repository is a frontier candidate, not a finished empirical result. The method, theory, and protocol are implemented; the protocol-v2.3 experiments still need to be run. The paper deliberately contains no numerical claims from old or simulated outputs.
+This repository is a frontier candidate, not a finished empirical result. The method, theory, and protocol are implemented; the protocol-v2.3 experiments still need to be run. The paper deliberately contains no numerical claims from the historical experiment notebook or from explicitly simulated plotting cells.
 
 TriGuard does not produce a safety score. Zero, blur, noise, uniform, and midpoint references are a synthetic stress test. Optional reference banks use real images selected for neutral predictions by a frozen calibration model, but that still does not establish domain-semantic missingness.
 
@@ -304,9 +304,10 @@ Every saved checkpoint also receives a content-hashed `.meta.json` sidecar.
 
 Protocol-v2.3 outputs are intentionally incompatible with earlier CSVs, including protocol-v2.2 and the older raw-L2-only files under `outputs/`. The analysis and table builders reject mixed or stale protocol versions, and each run identity includes a scientific source-tree hash, so use a fresh output directory. Attribution evaluation explains the predicted class by default; pass `--target_mode truth` only for an explicitly label-conditioned analysis.
 
-The old notebook and legacy manuscript figures live under `archive/` and
-`paper/archive/`. They contain simulated or obsolete material and are not
-experimental evidence.
+The historical `plots.ipynb` notebook is an actual earlier experiment
+notebook. A local provenance copy lives under `archive/`; legacy manuscript
+figures live under `paper/archive/`. These artifacts predate protocol-v2.3 and
+are not evidence for the frozen protocol-v2.3 claims.
 
 To generate a saliency panel for a trained checkpoint:
 
