@@ -13,11 +13,31 @@ IG_STEPS="${IG_STEPS:-32}"
 TRIGUARD_IG_STEPS="${TRIGUARD_IG_STEPS:-8}"
 BASELINE_MODES="${BASELINE_MODES:-zero,blur,noise,uniform,midpoint}"
 FAR_SAMPLES="${FAR_SAMPLES:-2}"
+REFERENCE_PAIR_SAMPLES="${REFERENCE_PAIR_SAMPLES:-0}"
+REGULARIZER_MICROBATCH="${REGULARIZER_MICROBATCH:-1}"
+CHECKPOINT_REGULARIZER_IG="${CHECKPOINT_REGULARIZER_IG:-1}"
+SAMPLED_MASS_PENALTY="${SAMPLED_MASS_PENALTY:-0}"
+PRELOAD_REFERENCE_BANKS="${PRELOAD_REFERENCE_BANKS:-1}"
+MAKE_ARTIFACTS="${MAKE_ARTIFACTS:-1}"
 REFERENCE_BANK="${REFERENCE_BANK:-reference_banks/mainconf/${DATASET}_${MODEL}_train_references.pt}"
 HELDOUT_REFERENCE_BANK="${HELDOUT_REFERENCE_BANK:-reference_banks/mainconf/${DATASET}_${MODEL}_heldout_references.pt}"
 RESERVATION_FILE="${RESERVATION_FILE:-reference_banks/mainconf/${DATASET}_${MODEL}_candidates.pt}"
 
 reference_args=()
+optimization_args=(
+  --reference_pair_samples "$REFERENCE_PAIR_SAMPLES"
+  --regularizer_microbatch "$REGULARIZER_MICROBATCH"
+  --vectorized_reference_ig
+)
+if [[ "$CHECKPOINT_REGULARIZER_IG" == "1" ]]; then
+  optimization_args+=(--checkpoint_regularizer_ig)
+fi
+if [[ "$SAMPLED_MASS_PENALTY" == "1" ]]; then
+  optimization_args+=(--sampled_mass_penalty)
+fi
+if [[ "$PRELOAD_REFERENCE_BANKS" == "1" ]]; then
+  optimization_args+=(--preload_reference_banks)
+fi
 if [[ -n "$REFERENCE_BANK" ]]; then
   reference_args+=(--reference_bank "$REFERENCE_BANK")
   if [[ ",$BASELINE_MODES," != *,bank,* ]]; then
@@ -64,6 +84,7 @@ run_setting() {
     --triguard_ig_steps "$TRIGUARD_IG_STEPS" \
     --baseline_modes "$BASELINE_MODES" \
     --far_samples "$FAR_SAMPLES" \
+    "${optimization_args[@]}" \
     --batch "$BATCH" \
     --num_workers 4 \
     --K_attr "$K_ATTR" \
@@ -88,6 +109,8 @@ run_setting "wads_curvature_robust" 0.0 0.05 0.0 0.0 0.01 0.25 0.0 max
 run_setting "cvar_curvature_robust" 0.0 0.05 0.0 0.0 0.01 0.25 0.0 cvar
 run_setting "cvar_mass_candidate" 0.0 0.05 0.0 0.0 0.01 0.25 0.01 cvar
 
-python -m triguard.stats --out "$OUT_DIR"
-python -m triguard.make_figures --out "$OUT_DIR" --mode aggregate
-python -m triguard.make_tables --out "$OUT_DIR" --label_prefix "$(basename "$OUT_DIR" | tr -c '[:alnum:]' '_')"
+if [[ "$MAKE_ARTIFACTS" == "1" ]]; then
+  python -m triguard.stats --out "$OUT_DIR"
+  python -m triguard.make_figures --out "$OUT_DIR" --mode aggregate
+  python -m triguard.make_tables --out "$OUT_DIR" --label_prefix "$(basename "$OUT_DIR" | tr -c '[:alnum:]' '_')"
+fi

@@ -11,6 +11,7 @@ RUN_REFERENCE_BANK="${RUN_REFERENCE_BANK:-1}"
 RUN_TRIGUARD_TRAIN="${RUN_TRIGUARD_TRAIN:-1}"
 RUN_ABLATION="${RUN_ABLATION:-1}"
 MAKE_ARTIFACTS="${MAKE_ARTIFACTS:-1}"
+PARALLEL_GPU_IDS="${PARALLEL_GPU_IDS:-}"
 
 REFERENCE_DIR="${REFERENCE_DIR:-reference_banks/mainconf}"
 RESERVATION_FILE="${RESERVATION_FILE:-$REFERENCE_DIR/cifar10_resnet50_imagenet_candidates.pt}"
@@ -46,11 +47,21 @@ if [[ "$RUN_CALIBRATION" == "1" ]]; then
 fi
 
 if [[ "$RUN_PRETRAINED_GRID" == "1" ]]; then
-  bash scripts/06_run_pretrained_grid.sh
+  if [[ -n "$PARALLEL_GPU_IDS" ]]; then
+    GPU_IDS="$PARALLEL_GPU_IDS" WORKFLOW=pretrained MAKE_ARTIFACTS_AFTER=0 \
+      bash scripts/13_run_parallel_training.sh
+  else
+    bash scripts/06_run_pretrained_grid.sh
+  fi
 fi
 
 if [[ "$RUN_CERT_SWEEP" == "1" ]]; then
-  bash scripts/07_run_certification_sweep.sh
+  if [[ -n "$PARALLEL_GPU_IDS" ]]; then
+    GPU_IDS="$PARALLEL_GPU_IDS" WORKFLOW=certification MAKE_ARTIFACTS_AFTER=0 \
+      bash scripts/13_run_parallel_training.sh
+  else
+    bash scripts/07_run_certification_sweep.sh
+  fi
 fi
 
 if [[ "$RUN_REFERENCE_BANK" == "1" ]]; then
@@ -60,13 +71,25 @@ if [[ "$RUN_REFERENCE_BANK" == "1" ]]; then
 fi
 
 if [[ "$RUN_TRIGUARD_TRAIN" == "1" ]]; then
-  REFERENCE_BANK="$REFERENCE_BANK" HELDOUT_REFERENCE_BANK="$HELDOUT_REFERENCE_BANK" RESERVATION_FILE="$RESERVATION_FILE" \
-    bash scripts/09_run_triguard_train.sh
+  if [[ -n "$PARALLEL_GPU_IDS" ]]; then
+    GPU_IDS="$PARALLEL_GPU_IDS" WORKFLOW=primary MAKE_ARTIFACTS_AFTER=0 \
+      REFERENCE_BANK="$REFERENCE_BANK" HELDOUT_REFERENCE_BANK="$HELDOUT_REFERENCE_BANK" RESERVATION_FILE="$RESERVATION_FILE" \
+      bash scripts/13_run_parallel_training.sh
+  else
+    REFERENCE_BANK="$REFERENCE_BANK" HELDOUT_REFERENCE_BANK="$HELDOUT_REFERENCE_BANK" RESERVATION_FILE="$RESERVATION_FILE" \
+      bash scripts/09_run_triguard_train.sh
+  fi
 fi
 
 if [[ "$RUN_ABLATION" == "1" ]]; then
-  REFERENCE_BANK="$REFERENCE_BANK" HELDOUT_REFERENCE_BANK="$HELDOUT_REFERENCE_BANK" RESERVATION_FILE="$RESERVATION_FILE" \
-    bash scripts/10_run_triguard_train_ablation.sh
+  if [[ -n "$PARALLEL_GPU_IDS" ]]; then
+    GPU_IDS="$PARALLEL_GPU_IDS" WORKFLOW=ablation MAKE_ARTIFACTS_AFTER=0 \
+      REFERENCE_BANK="$REFERENCE_BANK" HELDOUT_REFERENCE_BANK="$HELDOUT_REFERENCE_BANK" RESERVATION_FILE="$RESERVATION_FILE" \
+      bash scripts/13_run_parallel_training.sh
+  else
+    REFERENCE_BANK="$REFERENCE_BANK" HELDOUT_REFERENCE_BANK="$HELDOUT_REFERENCE_BANK" RESERVATION_FILE="$RESERVATION_FILE" \
+      bash scripts/10_run_triguard_train_ablation.sh
+  fi
 fi
 
 if [[ "$MAKE_ARTIFACTS" == "1" ]]; then

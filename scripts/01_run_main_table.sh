@@ -8,5 +8,6 @@ python run_triguard.py \
   --out outputs/icml2026 \
   --seeds 0,1,2,3,4,5,6,7,8,9 \
   --lambda_entropy 0.05 \
+  --regularizer_microbatch 8 \
   --K_attr 100 \
   --save_ckpt

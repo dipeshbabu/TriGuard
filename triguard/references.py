@@ -136,7 +136,7 @@ def sample_reference_baselines(
     if bank.size(0) < 2:
         raise ValueError("Reference bank must contain at least two images.")
     count = min(max(int(count), 2), bank.size(0))
-    index_device = generator.device if generator is not None else torch.device("cpu")
+    index_device = generator.device if generator is not None else bank.device
     indices = torch.stack(
         [
             torch.randperm(
@@ -145,7 +145,9 @@ def sample_reference_baselines(
             for _ in range(x.size(0))
         ],
         dim=0,
-    ).cpu()
+    )
+    if indices.device != bank.device:
+        indices = indices.to(bank.device)
     sampled = {}
     for index in range(count):
         sampled[f"bank_{index}"] = bank[indices[:, index]].to(

@@ -110,8 +110,15 @@ REGULARIZER_RESULT_COLUMNS = [
     "reference_risk",
     "reference_cvar_alpha",
     "reference_distance",
+    "triguard_ig_steps",
+    "reference_pair_samples",
     "reference_bank_samples",
     "eval_reference_bank_samples",
+    "regularizer_microbatch",
+    "vectorized_reference_ig",
+    "checkpoint_regularizer_ig",
+    "sampled_mass_penalty",
+    "preload_reference_banks",
     "training_reservation_hash",
     "reference_bank_hash",
     "heldout_reference_bank_hash",
@@ -451,8 +458,15 @@ def regularizer_fields(args):
         "reference_risk": args.reference_risk,
         "reference_cvar_alpha": args.reference_cvar_alpha,
         "reference_distance": args.reference_distance,
+        "triguard_ig_steps": args.triguard_ig_steps,
+        "reference_pair_samples": args.reference_pair_samples,
         "reference_bank_samples": args.reference_bank_samples,
         "eval_reference_bank_samples": args.eval_reference_bank_samples,
+        "regularizer_microbatch": args.regularizer_microbatch,
+        "vectorized_reference_ig": int(args.vectorized_reference_ig),
+        "checkpoint_regularizer_ig": int(args.checkpoint_regularizer_ig),
+        "sampled_mass_penalty": int(args.sampled_mass_penalty),
+        "preload_reference_banks": int(args.preload_reference_banks),
         "training_reservation_hash": (
             file_sha256(args.exclude_train_indices_file)
             if args.exclude_train_indices_file
@@ -880,9 +894,17 @@ def run_one_setting(
         bank_source_indices[role] = source_indices
         reserved_reference_indices.update(source_indices)
         if heldout:
-            heldout_reference_bank = bank
+            heldout_reference_bank = (
+                bank.to(device, non_blocking=True)
+                if args.preload_reference_banks
+                else bank
+            )
         else:
-            reference_bank = bank
+            reference_bank = (
+                bank.to(device, non_blocking=True)
+                if args.preload_reference_banks
+                else bank
+            )
     if {"train", "heldout"} <= set(bank_source_indices):
         overlap = bank_source_indices["train"] & bank_source_indices["heldout"]
         if overlap:
@@ -928,7 +950,13 @@ def run_one_setting(
         f"wads={args.lambda_wads}, rar={args.lambda_rar}, far={args.lambda_far}, "
         f"curvature={args.lambda_curvature}, robust={args.lambda_robust}"
         f", attr_mass={args.lambda_attr_mass}, reference_risk={args.reference_risk}, "
-        f"reference_distance={args.reference_distance}"
+        f"reference_distance={args.reference_distance}, "
+        f"pair_samples={args.reference_pair_samples}, "
+        f"regularizer_microbatch={args.regularizer_microbatch}, "
+        f"vectorized_reference_ig={args.vectorized_reference_ig}, "
+        f"checkpoint_regularizer_ig={args.checkpoint_regularizer_ig}, "
+        f"sampled_mass_penalty={args.sampled_mass_penalty}, "
+        f"preload_reference_banks={args.preload_reference_banks}"
     )
 
     ckpt_path = resolve_checkpoint_path(
@@ -946,6 +974,8 @@ def run_one_setting(
         eval_model.load_state_dict(state)
 
     train_seconds = 0.0
+    if device.type == "cuda":
+        torch.cuda.reset_peak_memory_stats(device)
     train_start = time.perf_counter()
     if not args.eval_only:
         train_model(
@@ -980,6 +1010,10 @@ def run_one_setting(
                 "reference_distance": args.reference_distance,
                 "reference_bank": reference_bank,
                 "reference_bank_samples": args.reference_bank_samples,
+                "regularizer_microbatch": args.regularizer_microbatch,
+                "vectorized_reference_ig": args.vectorized_reference_ig,
+                "checkpoint_regularizer_ig": args.checkpoint_regularizer_ig,
+                "sampled_mass_penalty": args.sampled_mass_penalty,
                 "attr_mass_floor": args.attr_mass_floor,
                 "attr_robust_baseline": args.attr_robust_baseline,
                 "far_samples": args.far_samples,
@@ -1094,6 +1128,8 @@ def run_one_setting(
                     eps, args.smoothgrad_noise_pixel / pixel_eps
                 ),
                 smoothgrad_samples=50,
+                smoothgrad_batch_size=args.smoothgrad_batch,
+                curve_batch_size=args.faithfulness_curve_batch,
                 clamp_min=clamp_min,
                 clamp_max=clamp_max,
                 baseline_min=baseline_min,
@@ -1113,6 +1149,11 @@ def run_one_setting(
                 for column in FAITHFULNESS_METRIC_COLUMNS
             }
         eval_seconds = time.perf_counter() - eval_start
+        peak_cuda_memory_mb = (
+            float(torch.cuda.max_memory_allocated(device) / (1024**2))
+            if device.type == "cuda"
+            else 0.0
+        )
         return {
             **identity,
             "dataset": ds,
@@ -1127,6 +1168,7 @@ def run_one_setting(
             "train_seconds": train_seconds,
             "eval_seconds": eval_seconds,
             "total_seconds": train_seconds + eval_seconds,
+            "peak_cuda_memory_mb": peak_cuda_memory_mb,
             "clean_acc": clean,
             "adv_error": adv_error,
             "attack_suite": args.attack_suite,
@@ -1208,6 +1250,8 @@ def run_one_setting(
                 eps, args.smoothgrad_noise_pixel / pixel_eps
             ),
             smoothgrad_samples=50,
+            smoothgrad_batch_size=args.smoothgrad_batch,
+            curve_batch_size=args.faithfulness_curve_batch,
             clamp_min=clamp_min,
             clamp_max=clamp_max,
             baseline_min=baseline_min,
@@ -1268,6 +1312,44 @@ def main():
     p.add_argument("--reference_cvar_alpha", type=float, default=0.75)
     p.add_argument("--reference_pair_samples", type=int, default=0)
     p.add_argument(
+        "--regularizer_microbatch",
+        type=int,
+        default=0,
+        help=(
+            "Split only attribution regularizers into microbatches while keeping "
+            "one optimizer step and full-batch cross-entropy; 0 disables splitting."
+        ),
+    )
+    p.add_argument(
+        "--vectorized_reference_ig",
+        action="store_true",
+        help=(
+            "Compute active reference IG maps in one traversal; pair with "
+            "--regularizer_microbatch to bound memory."
+        ),
+    )
+    p.add_argument(
+        "--checkpoint_regularizer_ig",
+        action="store_true",
+        help="Recompute model activations during higher-order IG backward to save memory.",
+    )
+    p.add_argument(
+        "--sampled_mass_penalty",
+        action="store_true",
+        help=(
+            "Estimate the mean mass-floor penalty on the references already "
+            "selected by pair subsampling instead of differentiating every reference."
+        ),
+    )
+    p.add_argument(
+        "--preload_reference_banks",
+        action="store_true",
+        help=(
+            "Keep reference-bank tensors on the accelerator so regularizer "
+            "microbatches do not repeatedly transfer sampled images from CPU."
+        ),
+    )
+    p.add_argument(
         "--reference_distance",
         choices=["allocation", "orthogonal_rms"],
         default="allocation",
@@ -1307,6 +1389,8 @@ def main():
     p.add_argument("--K_faith", type=int, default=50)
     p.add_argument("--delins_steps", type=int, default=50)
     p.add_argument("--smoothgrad_noise_pixel", type=float, default=0.05)
+    p.add_argument("--smoothgrad_batch", type=int, default=16)
+    p.add_argument("--faithfulness_curve_batch", type=int, default=64)
     p.add_argument(
         "--main_faithfulness",
         action="store_true",
@@ -1387,6 +1471,8 @@ def main():
         "K_attr": args.K_attr,
         "K_faith": args.K_faith,
         "delins_steps": args.delins_steps,
+        "smoothgrad_batch": args.smoothgrad_batch,
+        "faithfulness_curve_batch": args.faithfulness_curve_batch,
         "empirical_probe_samples": args.empirical_probe_samples,
     }
     invalid_positive = [
@@ -1404,6 +1490,8 @@ def main():
         p.error("Reference-bank sample counts must each be at least 2.")
     if args.reference_pair_samples < 0:
         p.error("--reference_pair_samples cannot be negative.")
+    if args.regularizer_microbatch < 0:
+        p.error("--regularizer_microbatch cannot be negative.")
     if args.far_samples <= 0:
         p.error("--far_samples must be positive.")
     if not 0.0 < args.stability_topk_fraction <= 1.0:
@@ -1584,6 +1672,7 @@ def main():
             "train_seconds",
             "eval_seconds",
             "total_seconds",
+            "peak_cuda_memory_mb",
             "clean_acc",
             "adv_error",
             "attack_suite",
@@ -1702,6 +1791,7 @@ def main():
             "train_seconds",
             "eval_seconds",
             "total_seconds",
+            "peak_cuda_memory_mb",
             "clean_acc",
             "adv_error",
             "attack_suite",

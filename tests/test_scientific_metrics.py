@@ -1,10 +1,12 @@
 import os
+import copy
 import sys
 import tempfile
 import types
 import unittest
 from unittest import mock
 
+import numpy as np
 import torch
 
 
@@ -18,8 +20,10 @@ try:
         completeness_orthogonal_distance,
         integrated_gradients,
         sanitize_attribution,
+        smoothgrad_squared,
     )
     from triguard.faithfulness import deletion_insertion_curve
+    from triguard.audit_pair_sampling import audit_pair_loss_matrix
     from triguard.eval import (
         _PixelSpaceModel,
         _baseline_drift_metrics,
@@ -34,6 +38,9 @@ try:
     from triguard.train import (
         _aggregate_reference_risk,
         _one_step_linf_perturb,
+        baseline_regularization_terms,
+        differentiable_integrated_gradients,
+        differentiable_integrated_gradients_many,
         train_one_epoch,
         worst_baseline_drift_term,
     )
@@ -63,7 +70,305 @@ class BatchNormClassifier(torch.nn.Module):
         return self.head(self.norm(x).flatten(1))
 
 
+class TinyNonlinearClassifier(torch.nn.Module):
+    def __init__(self):
+        super().__init__()
+        self.layers = torch.nn.Sequential(
+            torch.nn.Flatten(),
+            torch.nn.Linear(4, 5),
+            torch.nn.Tanh(),
+            torch.nn.Linear(5, 2),
+        )
+
+    def forward(self, x):
+        return self.layers(x)
+
+
 class ScientificMetricTests(unittest.TestCase):
+    def test_smoothgrad_noise_samples_are_batched_without_metric_change(self):
+        model = QuadraticClassifier()
+        x = torch.tensor([[[[0.2, 0.4], [0.6, 0.8]]]])
+        sequential = smoothgrad_squared(
+            model,
+            x,
+            target=0,
+            noise_level=0.1,
+            n_samples=7,
+            generator=torch.Generator().manual_seed(23),
+            sample_batch_size=1,
+        )
+        batched = smoothgrad_squared(
+            model,
+            x,
+            target=0,
+            noise_level=0.1,
+            n_samples=7,
+            generator=torch.Generator().manual_seed(23),
+            sample_batch_size=4,
+        )
+        self.assertTrue(torch.allclose(sequential, batched, atol=1e-7))
+
+    def test_deletion_curve_batches_model_evaluations(self):
+        class CountingClassifier(ChannelLinearClassifier):
+            def __init__(self):
+                super().__init__()
+                self.calls = 0
+
+            def forward(self, x):
+                self.calls += 1
+                return super().forward(x)
+
+        model = CountingClassifier()
+        x = torch.arange(1.0, 7.0).reshape(1, 1, 2, 3)
+        deletion_insertion_curve(
+            model,
+            x,
+            0,
+            x,
+            "deletion",
+            steps=5,
+            baseline=torch.zeros_like(x),
+            batch_size=64,
+        )
+        self.assertEqual(model.calls, 1)
+
+    def test_regularizer_microbatch_matches_full_batch_update(self):
+        torch.manual_seed(13)
+        full_model = TinyNonlinearClassifier()
+        micro_model = copy.deepcopy(full_model)
+        x = torch.randn(4, 1, 2, 2)
+        y = torch.tensor([0, 1, 0, 1])
+        common = {
+            "lambda_entropy": 0.0,
+            "lambda_wads": 0.1,
+            "lambda_attr_mass": 0.07,
+            "attr_mass_floor": 0.9,
+            "triguard_ig_steps": 2,
+            "baseline_modes": "zero,midpoint",
+            "baseline_min": 0.0,
+            "baseline_max": 1.0,
+        }
+        full_optimizer = torch.optim.SGD(full_model.parameters(), lr=0.01)
+        micro_optimizer = torch.optim.SGD(micro_model.parameters(), lr=0.01)
+        train_one_epoch(
+            full_model,
+            [(x, y)],
+            full_optimizer,
+            torch.device("cpu"),
+            regularizer_microbatch=0,
+            **common,
+        )
+        train_one_epoch(
+            micro_model,
+            [(x, y)],
+            micro_optimizer,
+            torch.device("cpu"),
+            regularizer_microbatch=1,
+            **common,
+        )
+        for full_parameter, micro_parameter in zip(
+            full_model.parameters(), micro_model.parameters()
+        ):
+            self.assertTrue(
+                torch.allclose(
+                    full_parameter, micro_parameter, atol=1e-7, rtol=1e-6
+                )
+            )
+
+    def test_vectorized_reference_ig_matches_sequential_and_checkpointed(self):
+        torch.manual_seed(3)
+        model = TinyNonlinearClassifier()
+        x = torch.randn(2, 1, 2, 2)
+        targets = torch.tensor([0, 1])
+        baselines = {
+            "zero": torch.zeros_like(x),
+            "one": torch.ones_like(x),
+            "mid": torch.full_like(x, 0.5),
+        }
+        sequential = {
+            name: differentiable_integrated_gradients(
+                model, x, targets, baseline, steps=3
+            )
+            for name, baseline in baselines.items()
+        }
+        vectorized = differentiable_integrated_gradients_many(
+            model, x, targets, baselines, steps=3
+        )
+        checkpointed = differentiable_integrated_gradients_many(
+            model,
+            x,
+            targets,
+            baselines,
+            steps=3,
+            checkpoint_activations=True,
+        )
+        for name in baselines:
+            self.assertTrue(
+                torch.allclose(sequential[name], vectorized[name], atol=1e-6)
+            )
+            self.assertTrue(
+                torch.allclose(vectorized[name], checkpointed[name], atol=1e-6)
+            )
+
+        loss = sum(value.square().mean() for value in checkpointed.values())
+        loss.backward()
+        self.assertIsNotNone(model.layers[1].weight.grad)
+
+    def test_pair_sampling_audit_detects_max_risk_downward_bias(self):
+        pair_losses = np.asarray(
+            [
+                [0.1, 0.2, 0.3, 1.0],
+                [0.2, 0.4, 0.6, 1.2],
+                [0.1, 0.5, 0.7, 1.4],
+            ]
+        )
+        result = audit_pair_loss_matrix(
+            pair_losses,
+            sample_size=2,
+            risk="max",
+            cvar_alpha=0.75,
+            trials=4000,
+            seed=17,
+        )
+        self.assertLess(float(result["bias"]), -0.05)
+        exact = audit_pair_loss_matrix(
+            pair_losses,
+            sample_size=4,
+            risk="max",
+            cvar_alpha=0.75,
+            trials=20,
+            seed=17,
+        )
+        self.assertAlmostEqual(float(exact["bias"]), 0.0)
+        self.assertAlmostEqual(float(exact["rank_correlation"]), 1.0)
+
+    def test_mass_floor_reference_scores_use_one_batched_forward(self):
+        class CountingClassifier(ChannelLinearClassifier):
+            def __init__(self):
+                super().__init__()
+                self.calls = 0
+
+            def forward(self, x):
+                self.calls += 1
+                return super().forward(x)
+
+        model = CountingClassifier()
+        x = torch.ones(2, 1, 1, 2)
+        family = {
+            "a": torch.zeros_like(x),
+            "b": torch.full_like(x, 0.25),
+            "c": torch.full_like(x, 0.5),
+        }
+        with mock.patch(
+            "triguard.train.make_baseline_family",
+            return_value=family,
+        ), mock.patch(
+            "triguard.train.differentiable_integrated_gradients",
+            side_effect=lambda model, x, y, baseline, **kwargs: x - baseline,
+        ):
+            baseline_regularization_terms(
+                model,
+                x,
+                torch.tensor([0, 1]),
+                baseline_modes="a,b,c",
+                baseline_min=0.0,
+                baseline_max=1.0,
+                vectorized_reference_ig=False,
+            )
+        self.assertEqual(model.calls, 1)
+
+    def test_pair_sampling_happens_before_reference_ig(self):
+        x = torch.zeros(2, 1, 1, 2)
+        family = {
+            "a": torch.full_like(x, 0.0),
+            "b": torch.full_like(x, 0.2),
+            "c": torch.full_like(x, 0.4),
+            "d": torch.full_like(x, 0.6),
+            "e": torch.full_like(x, 0.8),
+        }
+        captured = {}
+
+        def fake_many(model, active_x, targets, baselines, **kwargs):
+            captured["names"] = list(baselines)
+            return baselines
+
+        torch.manual_seed(7)
+        with mock.patch(
+            "triguard.train.make_baseline_family", return_value=family
+        ), mock.patch(
+            "triguard.train.differentiable_integrated_gradients_many",
+            side_effect=fake_many,
+        ):
+            worst_baseline_drift_term(
+                model=object(),
+                x=x,
+                y=torch.tensor([0, 1]),
+                baseline_modes="a,b,c,d,e",
+                baseline_min=0.0,
+                baseline_max=1.0,
+                reference_pair_samples=1,
+                vectorized_reference_ig=True,
+            )
+        self.assertEqual(len(captured["names"]), 2)
+
+    def test_sampled_mass_penalty_reuses_pair_references(self):
+        x = torch.ones(2, 1, 1, 2)
+        family = {
+            "a": torch.full_like(x, 0.0),
+            "b": torch.full_like(x, 0.2),
+            "c": torch.full_like(x, 0.4),
+            "d": torch.full_like(x, 0.6),
+            "e": torch.full_like(x, 0.8),
+        }
+        captured = {}
+
+        def fake_many(model, active_x, targets, baselines, **kwargs):
+            captured["names"] = list(baselines)
+            return baselines
+
+        torch.manual_seed(9)
+        with mock.patch(
+            "triguard.train.make_baseline_family", return_value=family
+        ), mock.patch(
+            "triguard.train.differentiable_integrated_gradients_many",
+            side_effect=fake_many,
+        ):
+            baseline_regularization_terms(
+                ChannelLinearClassifier(),
+                x,
+                torch.tensor([0, 1]),
+                baseline_modes="a,b,c,d,e",
+                baseline_min=0.0,
+                baseline_max=1.0,
+                reference_pair_samples=1,
+                sampled_mass_penalty=True,
+                vectorized_reference_ig=True,
+            )
+        self.assertEqual(len(captured["names"]), 2)
+
+    def test_regularizer_microbatch_keeps_one_optimizer_step(self):
+        torch.manual_seed(11)
+        model = TinyNonlinearClassifier()
+        optimizer = torch.optim.SGD(model.parameters(), lr=0.01)
+        loader = [
+            (
+                torch.randn(4, 1, 2, 2),
+                torch.tensor([0, 1, 0, 1]),
+            )
+        ]
+        with mock.patch.object(
+            optimizer, "step", wraps=optimizer.step
+        ) as step:
+            train_one_epoch(
+                model,
+                loader,
+                optimizer,
+                torch.device("cpu"),
+                lambda_entropy=0.05,
+                regularizer_microbatch=1,
+            )
+        self.assertEqual(step.call_count, 1)
+
     def test_attribution_regularizer_does_not_update_batchnorm_statistics(self):
         model = BatchNormClassifier()
         optimizer = torch.optim.SGD(model.parameters(), lr=0.01)
@@ -241,7 +546,7 @@ class ScientificMetricTests(unittest.TestCase):
 
         with mock.patch("triguard.train.make_baseline_family", return_value=family), mock.patch(
             "triguard.train.differentiable_integrated_gradients",
-            side_effect=lambda model, x, y, baseline, steps: baseline,
+            side_effect=lambda model, x, y, baseline, **kwargs: baseline,
         ):
             loss = worst_baseline_drift_term(
                 model=object(),
@@ -250,6 +555,7 @@ class ScientificMetricTests(unittest.TestCase):
                 baseline_modes="a,b,c",
                 baseline_min=0.0,
                 baseline_max=1.0,
+                vectorized_reference_ig=False,
             )
         self.assertAlmostEqual(float(loss), 2.0)
 

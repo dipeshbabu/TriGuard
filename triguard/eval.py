@@ -923,6 +923,7 @@ def evaluate_appendix_metrics(
 def evaluate_faithfulness(model, test_set, device, k=50, ig_steps=50, delins_steps=50,
                           seed=0, baseline_mode="blur", target_mode="pred",
                           smoothgrad_noise=0.1, smoothgrad_samples=50,
+                          smoothgrad_batch_size=16, curve_batch_size=64,
                           clamp_min=0.0, clamp_max=1.0,
                           baseline_min=0.0, baseline_max=1.0):
     rng = np.random.default_rng(seed)
@@ -959,7 +960,15 @@ def evaluate_faithfulness(model, test_set, device, k=50, ig_steps=50, delins_ste
             )
         )
         ig_attr = integrated_gradients(model, x, target, baseline, steps=ig_steps)
-        ig_d, ig_i, del_curve, ins_curve = faithfulness_auc(model, x, target, ig_attr, steps=delins_steps, baseline=baseline)
+        ig_d, ig_i, del_curve, ins_curve = faithfulness_auc(
+            model,
+            x,
+            target,
+            ig_attr,
+            steps=delins_steps,
+            baseline=baseline,
+            curve_batch_size=curve_batch_size,
+        )
         _append_finite(ig_del, ig_d)
         _append_finite(ig_ins, ig_i)
 
@@ -972,8 +981,17 @@ def evaluate_faithfulness(model, test_set, device, k=50, ig_steps=50, delins_ste
             clamp_min=clamp_min,
             clamp_max=clamp_max,
             generator=_torch_generator(x, seed, "smoothgrad", int(idx)),
+            sample_batch_size=smoothgrad_batch_size,
         )
-        sg_d, sg_i, del_curve2, ins_curve2 = faithfulness_auc(model, x, target, sg_attr, steps=delins_steps, baseline=baseline)
+        sg_d, sg_i, del_curve2, ins_curve2 = faithfulness_auc(
+            model,
+            x,
+            target,
+            sg_attr,
+            steps=delins_steps,
+            baseline=baseline,
+            curve_batch_size=curve_batch_size,
+        )
         _append_finite(sg_del, sg_d)
         _append_finite(sg_ins, sg_i)
 
@@ -990,6 +1008,7 @@ def evaluate_faithfulness(model, test_set, device, k=50, ig_steps=50, delins_ste
             random_attr,
             steps=delins_steps,
             baseline=baseline,
+            curve_batch_size=curve_batch_size,
         )
         _append_finite(random_del, random_d)
         _append_finite(random_ins, random_i)

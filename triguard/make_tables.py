@@ -32,8 +32,15 @@ REGULARIZER_COLUMNS = [
     "reference_risk",
     "reference_cvar_alpha",
     "reference_distance",
+    "triguard_ig_steps",
+    "reference_pair_samples",
     "reference_bank_samples",
     "eval_reference_bank_samples",
+    "regularizer_microbatch",
+    "vectorized_reference_ig",
+    "checkpoint_regularizer_ig",
+    "sampled_mass_penalty",
+    "preload_reference_banks",
     "training_reservation_hash",
     "reference_bank_hash",
     "heldout_reference_bank_hash",
@@ -180,6 +187,7 @@ def main():
             "train_seconds",
             "eval_seconds",
             "total_seconds",
+            "peak_cuda_memory_mb",
         ]:
             if metric in df.columns:
                 agg_map[metric] = ["mean", "std"]
@@ -260,6 +268,11 @@ def main():
             table_data["Time (s)"] = fmt_mean_std(
                 grp["total_seconds_mean"],
                 grp["total_seconds_std"],
+            )
+        if "peak_cuda_memory_mb_mean" in grp.columns:
+            table_data["Peak CUDA MB"] = fmt_mean_std(
+                grp["peak_cuda_memory_mb_mean"],
+                grp["peak_cuda_memory_mb_std"],
             )
         crown_mean = f"{crown_metric}_mean"
         crown_std = f"{crown_metric}_std"

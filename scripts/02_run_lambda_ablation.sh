@@ -11,5 +11,6 @@ python run_triguard.py \
   --dataset mnist \
   --model simplecnn \
   --lambda_list "0.0,0.01,0.05,0.1" \
+  --regularizer_microbatch 8 \
   --K_attr 100 \
   --save_ckpt

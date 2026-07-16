@@ -166,15 +166,31 @@ def smoothgrad_squared(
     clamp_min=None,
     clamp_max=None,
     generator=None,
+    sample_batch_size=16,
 ):
     model.eval()
-    grads_sq = []
+    accumulated = torch.zeros_like(x)
     noise_scale = _as_channel_tensor(noise_level, x)
-    for _ in range(n_samples):
-        noise = torch.randn(
-            x.shape, device=x.device, dtype=x.dtype, generator=generator
+    completed = 0
+    active_batch = max(int(sample_batch_size), 1)
+    while completed < n_samples:
+        count = min(active_batch, n_samples - completed)
+        # Draw samples one at a time so changing only the model-evaluation
+        # batch size does not change the seeded SmoothGrad perturbations.
+        noise = torch.stack(
+            [
+                torch.randn(
+                    x.shape,
+                    device=x.device,
+                    dtype=x.dtype,
+                    generator=generator,
+                )
+                for _ in range(count)
+            ],
+            dim=0,
         )
-        x_noisy = x + noise_scale * noise
+        x_noisy = x.unsqueeze(0) + noise_scale.unsqueeze(0) * noise
+        x_noisy = x_noisy.reshape(count * x.size(0), *x.shape[1:])
         if clamp_min is not None and clamp_max is not None:
             x_noisy = clamp_input(x_noisy, clamp_min, clamp_max)
         x_noisy = x_noisy.detach().requires_grad_(True)
@@ -182,5 +198,8 @@ def smoothgrad_squared(
         score = logits[:, target].sum()
         grad = torch.autograd.grad(score, x_noisy, retain_graph=False, create_graph=False)[0]
         grad = sanitize_attribution(grad)
-        grads_sq.append(grad.pow(2))
-    return sanitize_attribution(torch.stack(grads_sq, dim=0).mean(dim=0))
+        accumulated = accumulated + grad.reshape(
+            count, x.size(0), *x.shape[1:]
+        ).pow(2).sum(dim=0)
+        completed += count
+    return sanitize_attribution(accumulated / max(int(n_samples), 1))

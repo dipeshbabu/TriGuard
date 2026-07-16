@@ -12,7 +12,16 @@ def _rank_pixels(attr: torch.Tensor):
     return order
 
 
-def deletion_insertion_curve(model, x, target, attr, mode, steps=50, baseline=None):
+def deletion_insertion_curve(
+    model,
+    x,
+    target,
+    attr,
+    mode,
+    steps=50,
+    baseline=None,
+    batch_size=64,
+):
     """
     mode: 'deletion' or 'insertion'
     returns curve length steps+1 of p(target | x_t)
@@ -38,11 +47,9 @@ def deletion_insertion_curve(model, x, target, attr, mode, steps=50, baseline=No
     else:
         raise ValueError("mode must be deletion or insertion")
 
-    curve = []
+    states = []
     for t in range(steps+1):
-        with torch.no_grad():
-            p = torch.softmax(model(cur), dim=1)[0, target].item()
-        curve.append(p)
+        states.append(cur.clone())
 
         if t == steps:
             break
@@ -56,7 +63,18 @@ def deletion_insertion_curve(model, x, target, attr, mode, steps=50, baseline=No
         else:
             cur[..., h, w] = x0[..., h, w]
 
-    return np.array(curve, dtype=np.float64)
+    active_batch = max(int(batch_size), 1)
+    probabilities = []
+    with torch.no_grad():
+        for start in range(0, len(states), active_batch):
+            state_batch = torch.cat(states[start:start + active_batch], dim=0)
+            probabilities.extend(
+                torch.softmax(model(state_batch), dim=1)[:, int(target)]
+                .detach()
+                .cpu()
+                .tolist()
+            )
+    return np.asarray(probabilities, dtype=np.float64)
 
 
 def auc(curve: np.ndarray):
@@ -64,9 +82,33 @@ def auc(curve: np.ndarray):
     return float(np.trapz(curve, x))
 
 
-def faithfulness_auc(model, x, target, attr, steps=50, baseline=None):
+def faithfulness_auc(
+    model,
+    x,
+    target,
+    attr,
+    steps=50,
+    baseline=None,
+    curve_batch_size=64,
+):
     del_curve = deletion_insertion_curve(
-        model, x, target, attr, "deletion", steps=steps, baseline=baseline)
+        model,
+        x,
+        target,
+        attr,
+        "deletion",
+        steps=steps,
+        baseline=baseline,
+        batch_size=curve_batch_size,
+    )
     ins_curve = deletion_insertion_curve(
-        model, x, target, attr, "insertion", steps=steps, baseline=baseline)
+        model,
+        x,
+        target,
+        attr,
+        "insertion",
+        steps=steps,
+        baseline=baseline,
+        batch_size=curve_batch_size,
+    )
     return auc(del_curve), auc(ins_curve), del_curve, ins_curve

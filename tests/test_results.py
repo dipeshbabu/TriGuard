@@ -4,6 +4,8 @@ import os
 import sys
 import tempfile
 import unittest
+import multiprocessing
+from concurrent.futures import ProcessPoolExecutor, ThreadPoolExecutor
 from types import SimpleNamespace
 from unittest.mock import patch
 
@@ -29,7 +31,62 @@ finally:
     sys.version_info = _REAL_VERSION_INFO
 
 
+def _write_result_in_process(payload):
+    path, index = payload
+    append_csv(
+        path,
+        {"config_hash": str(index), "metric": float(index)},
+        ["config_hash", "metric"],
+        key_fields=["config_hash"],
+    )
+
+
 class ResultIdentityTests(unittest.TestCase):
+    def test_cross_process_result_writes_are_serialized(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = os.path.join(directory, "parallel_processes.csv")
+            context = multiprocessing.get_context("spawn")
+            with ProcessPoolExecutor(
+                max_workers=4,
+                mp_context=context,
+            ) as executor:
+                list(
+                    executor.map(
+                        _write_result_in_process,
+                        [(path, index) for index in range(16)],
+                    )
+                )
+            with open(path, newline="") as handle:
+                rows = list(csv.DictReader(handle))
+        self.assertEqual(len(rows), 16)
+        self.assertEqual(
+            {row["config_hash"] for row in rows},
+            {str(index) for index in range(16)},
+        )
+
+    def test_concurrent_result_writes_are_serialized(self):
+        header = ["config_hash", "metric"]
+        with tempfile.TemporaryDirectory() as directory:
+            path = os.path.join(directory, "parallel.csv")
+
+            def write(index):
+                append_csv(
+                    path,
+                    {"config_hash": str(index), "metric": float(index)},
+                    header,
+                    key_fields=["config_hash"],
+                )
+
+            with ThreadPoolExecutor(max_workers=8) as executor:
+                list(executor.map(write, range(32)))
+            with open(path, newline="") as handle:
+                rows = list(csv.DictReader(handle))
+        self.assertEqual(len(rows), 32)
+        self.assertEqual(
+            {row["config_hash"] for row in rows},
+            {str(index) for index in range(32)},
+        )
+
     def test_train_loss_selection_freezes_cpu_best_state(self):
         model = torch.nn.Linear(1, 1, bias=False)
         optimizer = torch.optim.SGD(model.parameters(), lr=0.1)
@@ -114,8 +171,8 @@ class ResultIdentityTests(unittest.TestCase):
             get_experiment_grid("mnist", "convnext_tiny_imagenet", "workshop")
 
     def test_stale_protocol_outputs_are_rejected(self):
-        with self.assertRaisesRegex(ValueError, "expected only 2.2"):
-            validate_protocol_values(["2.1"], "stale.csv")
+        with self.assertRaisesRegex(ValueError, "expected only 2.3"):
+            validate_protocol_values(["2.2"], "stale.csv")
 
     def test_calibration_sidecar_binds_checkpoint_to_reservation(self):
         with tempfile.TemporaryDirectory() as directory:

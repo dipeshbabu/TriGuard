@@ -2,7 +2,7 @@
 
 TriGuard studies how Integrated Gradients changes when its reference changes. It separates the constant component forced by completeness from the remaining allocation drift, then trains against the upper tail of drift over a reference distribution.
 
-This repository is a frontier candidate, not a finished empirical result. The method, theory, and protocol are implemented; the protocol-v2.2 experiments still need to be run. The paper deliberately contains no numerical claims from old or simulated outputs.
+This repository is a frontier candidate, not a finished empirical result. The method, theory, and protocol are implemented; the protocol-v2.3 experiments still need to be run. The paper deliberately contains no numerical claims from old or simulated outputs.
 
 TriGuard does not produce a safety score. Zero, blur, noise, uniform, and midpoint references are a synthetic stress test. Optional reference banks use real images selected for neutral predictions by a frozen calibration model, but that still does not establish domain-semantic missingness.
 
@@ -60,6 +60,13 @@ TriGuard-Train supports:
 - one-step adversarial consistency regularization
 - entropy-only and CE-only controls
 - sampled reference pairs for larger banks
+- pair-first reference selection so unused references are never differentiated
+- vectorized multi-reference IG for higher accelerator utilization
+- effective-batch-preserving regularizer microbatching
+- optional activation checkpointing for higher-order IG
+- sampled mass-floor estimation over the active reference subset
+- optional accelerator-resident reference banks
+- batched SmoothGrad and deletion/insertion curve evaluation
 
 Additional workflows also support:
 
@@ -207,12 +214,85 @@ RUN_RESERVATION=0 RUN_CALIBRATION=0 RUN_PRETRAINED_GRID=0 \
   bash scripts/12_run_mainconf_workflow.sh
 ```
 
+On a multi-GPU machine, the full workflow can shard the focused primary and
+ablation seeds automatically:
+
+```bash
+PARALLEL_GPU_IDS=0,1,2,3,4,5,6,7 \
+  bash scripts/12_run_mainconf_workflow.sh
+```
+
 All TriGuard-Train scripts accept environment overrides. For example:
 
 ```bash
 SEEDS=0,1 DATASET=cifar100 MODEL=convnext_tiny_imagenet \
   bash scripts/10_run_triguard_train_ablation.sh
 ```
+
+The focused frontier workflows default to exact all-pair risk over every
+reference instantiated for that training example (the five synthetic
+references plus the configured bank draw) and full mass-floor evaluation.
+They still use regularizer microbatches of one, vectorized reference IG,
+accelerator-resident reference banks, and activation checkpointing. These can
+be tuned without changing the cross-entropy batch or optimizer-step count:
+
+```bash
+REGULARIZER_MICROBATCH=2 PRELOAD_REFERENCE_BANKS=1 \
+CHECKPOINT_REGULARIZER_IG=0 \
+  bash scripts/09_run_triguard_train.sh
+```
+
+Pair subsampling and sampled mass-floor estimation are opt-in approximations:
+
+```bash
+REFERENCE_PAIR_SAMPLES=4 SAMPLED_MASS_PENALTY=1 \
+  bash scripts/09_run_triguard_train.sh
+```
+
+Do not use those approximations for the frozen frontier protocol until their
+checkpoint-level bias and ranking fidelity have been measured:
+
+```bash
+CHECKPOINT=outputs/.../checkpoints/...pt \
+  bash scripts/15_audit_pair_sampling.sh
+```
+
+The audit computes every reference-pair loss once on fixed test examples, then
+replays pair subsampling cheaply for mean, max, and CVaR. It writes absolute and
+relative bias, MAE/RMSE, rank correlation, and full-tail pair coverage. Set
+`FAIL_ON_THRESHOLD=1` to enforce the default 5% relative-bias and 0.90
+rank-correlation gates.
+
+Run seed shards concurrently on several GPUs with concurrency-safe CSV writes:
+
+```bash
+GPU_IDS=0,1,2,3,4,5,6,7 WORKFLOW=primary \
+  bash scripts/13_run_parallel_training.sh
+
+GPU_IDS=0,1,2,3,4,5,6,7 WORKFLOW=ablation \
+  bash scripts/13_run_parallel_training.sh
+
+GPU_IDS=0,1,2,3,4 WORKFLOW=pretrained \
+  bash scripts/13_run_parallel_training.sh
+
+GPU_IDS=0,1,2,3,4 WORKFLOW=certification \
+  bash scripts/13_run_parallel_training.sh
+```
+
+Each seed stays on one GPU across all treatments, preserving paired hardware
+conditions. Statistical artifacts are generated once after every worker exits.
+
+Before renting a multi-GPU fleet, benchmark the most expensive primary setting
+for one epoch and run the full primary evaluation once. The projection includes
+both repeated training and per-checkpoint AutoAttack/attribution/faithfulness
+evaluation, and reports peak CUDA memory:
+
+```bash
+bash scripts/14_benchmark_primary.sh
+```
+
+Set `RUN_FULL_EVAL_BENCHMARK=0` only for a quick training-throughput check; the
+resulting projection will explicitly warn that evaluation time is excluded.
 
 The training scripts write to `outputs/icml2026_triguard_train_mainconf` and
 `outputs/icml2026_triguard_train_ablation_mainconf` by default. Reuse an old output
@@ -222,7 +302,7 @@ comparison hash. Duplicate run identities are rejected, and `manifests/`
 records arguments, artifact hashes, package versions, hardware, and Git state.
 Every saved checkpoint also receives a content-hashed `.meta.json` sidecar.
 
-Protocol-v2.2 outputs are intentionally incompatible with earlier CSVs, including the older raw-L2-only files under `outputs/`. The analysis and table builders reject mixed or stale protocol versions, and each run identity includes a scientific source-tree hash, so use a fresh output directory. Attribution evaluation explains the predicted class by default; pass `--target_mode truth` only for an explicitly label-conditioned analysis.
+Protocol-v2.3 outputs are intentionally incompatible with earlier CSVs, including protocol-v2.2 and the older raw-L2-only files under `outputs/`. The analysis and table builders reject mixed or stale protocol versions, and each run identity includes a scientific source-tree hash, so use a fresh output directory. Attribution evaluation explains the predicted class by default; pass `--target_mode truth` only for an explicitly label-conditioned analysis.
 
 The old notebook and legacy manuscript figures live under `archive/` and
 `paper/archive/`. They contain simulated or obsolete material and are not

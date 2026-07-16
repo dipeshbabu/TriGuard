@@ -1,4 +1,4 @@
-PROTOCOL_VERSION = "2.2"
+PROTOCOL_VERSION = "2.3"
 
 
 def validate_protocol_values(values, source: str):
